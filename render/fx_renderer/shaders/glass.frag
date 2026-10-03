@@ -52,6 +52,19 @@ float mask_at(vec2 px) {
 	return clamp(texture2D(mask, mask_src.xy + uv * mask_src.zw).a / 0.01, 0.0, 1.0);
 }
 
+// mean coverage of the mask over three rings (r/3, 2r/3, r) around q,
+// 16 directions each, staggered so no direction is favoured
+float field(vec2 q, float r) {
+	float sum = mask_at(q);
+	for (int i = 0; i < 16; i++) {
+		float a = float(i) * 0.392699;
+		vec2 d1 = vec2(cos(a), sin(a));
+		vec2 d2 = vec2(cos(a + 0.19635), sin(a + 0.19635));
+		sum += mask_at(q + d1 * r * 0.333) + mask_at(q + d2 * r * 0.667) + mask_at(q + d1 * r);
+	}
+	return sum / 49.0;
+}
+
 float rounded_box(vec2 p, vec2 half_size, float r) {
 	vec2 q = abs(p) - half_size + r;
 	return length(max(q, 0.0)) + min(max(q.x, q.y), 0.0) - r;
@@ -76,59 +89,23 @@ void main() {
 		if (a <= 0.0) {
 			discard;
 		}
-		// The bevel grows with the pane: up to `reach` on a big pane, but never
-		// more than about half the pane's local thickness, so a small pill
-		// still has a flat top. March 8 axes both ways out to `reach`: the
-		// nearest edge gives the distance, the thinnest axis the thickness,
-		// all edges within reach (weighted) the normal.
-		float reach = max(edge * 2.5, 48.0);
-		float nearest = reach;
-		float thickness = 2.0 * reach;
-		vec2 dir_sum = vec2(0.0);
-		// most of a big pane is far from any edge: one ring of probes says so
-		bool interior = true;
-		for (int i = 0; i < 8; i++) {
-			float ang = float(i) * 0.785398;  // 2 pi / 8
-			if (mask_at(px + vec2(cos(ang), sin(ang)) * reach) < 0.5) {
-				interior = false;
-				break;
-			}
+		// A smooth coverage field (the mask averaged over two rings around the
+		// point): 0.5 at the edge, rising to 1 a bevel's width inside. Its
+		// level gives the position across the bevel and its slope the normal,
+		// both continuous, so the bent backdrop has no jagged steps and every
+		// pane gets the same rim whatever its size.
+		bevel = max(edge * 1.4, 24.0);
+		float c = field(px, bevel);
+		if (c > 0.999) {
+			// deep inside (most of a big pane): flat, nothing to bend
+			n = vec2(0.0);
+		} else {
+			float g = bevel * 0.25;   // a wide step: a smooth slope, a smooth normal
+			vec2 grad = vec2(field(px + vec2(g, 0.0), bevel) - field(px - vec2(g, 0.0), bevel),
+			                 field(px + vec2(0.0, g), bevel) - field(px - vec2(0.0, g), bevel));
+			n = -grad / max(length(grad), 1e-5);
 		}
-		if (!interior) {
-			for (int i = 0; i < 8; i++) {
-				float ang = float(i) * 0.392699;  // pi / 8: 8 axes cover all 16 directions
-				vec2 dir = vec2(cos(ang), sin(ang));
-				float h1 = reach;
-				float h2 = reach;
-				// 24 steps, and the edge placed between the last inside and the
-				// first outside step by the mask's (anti-aliased) value: smooth
-				// distances, no blocky bands
-				float prev1 = 1.0, prev2 = 1.0;
-				for (int k = 1; k <= 24; k++) {
-					float dist = float(k) * reach / 24.0;
-					if (h1 == reach) {
-						float m = mask_at(px + dir * dist);
-						if (m < 0.5) {
-							h1 = dist - reach / 24.0 * clamp((0.5 - m) / max(prev1 - m, 1e-3), 0.0, 1.0);
-						}
-						prev1 = m;
-					}
-					if (h2 == reach) {
-						float m = mask_at(px - dir * dist);
-						if (m < 0.5) {
-							h2 = dist - reach / 24.0 * clamp((0.5 - m) / max(prev2 - m, 1e-3), 0.0, 1.0);
-						}
-						prev2 = m;
-					}
-				}
-				nearest = min(nearest, min(h1, h2));
-				thickness = min(thickness, h1 + h2);
-				dir_sum += dir * (reach - h1) - dir * (reach - h2);
-			}
-		}
-		bevel = max(min(reach, thickness * 0.45), 4.0);
-		d = -nearest;
-		n = dir_sum / max(length(dir_sum), 1e-4);
+		d = -clamp((c - 0.5) * 2.0, 0.0, 1.0) * bevel;
 		coverage = a;
 	} else {
 		float r = min(radius, min(half_size.x, half_size.y));
@@ -155,12 +132,12 @@ void main() {
 	float bent = tilt - asin(sin(tilt) / 1.5);
 	// macOS-like lens: the backdrop is pulled in hard right at the rim (a
 	// convex edge magnifies), the flat middle stays put
-	float shift = tan(bent) * refraction * (1.0 + 1.2 * u * u);
+	float shift = tan(bent) * refraction * (1.0 + 0.4 * u * u);
 
 	// What's behind is seen sharp, only bent by the bevel (no smear): the
 	// glass shows itself by how light passes through it, below.
 	float rim = 1.0 - x;
-	vec3 color = sample_rgb(px - n * shift, n * chroma * 0.6 * rim * rim);
+	vec3 color = sample_rgb(px - n * shift, n * chroma * 0.3 * rim * rim);
 
 	// vibrancy: what's seen through the glass a touch brighter and more vivid
 	vec3 grey = vec3(dot(color, vec3(0.2126, 0.7152, 0.0722)));
