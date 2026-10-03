@@ -160,8 +160,8 @@ void main() {
 	// ellipse of samples (long along the normal, the direction the bevel bends
 	// light) that grows toward the rim; on the flat top it shrinks to one point.
 	float rim = 1.0 - x;
-	// a soft smear across the whole pane, much stronger toward the rim
-	float smear = refraction * (0.35 + 0.6 * pow(rim, 1.5)) + 4.0 * rim;
+	// clear glass: sharp in the middle, smearing more and more toward the rim
+	float smear = refraction * 0.7 * rim * rim * rim + 3.0 * rim * rim;
 	vec2 base = px - n * shift;
 	vec2 disp = n * chroma * 0.6 * rim * rim;
 	vec3 color;
@@ -171,9 +171,9 @@ void main() {
 		vec2 t = vec2(-n.y, n.x);
 		vec3 acc = vec3(0.0);
 		float wsum = 0.0;
-		// the pattern turns from pixel to pixel (interleaved gradient noise),
-		// so its taps blend into a smooth smear instead of ghost copies
-		float spin = 6.28318 * fract(52.9829189 * fract(dot(px, vec2(0.06711056, 0.00583715))));
+		// fixed pattern (no per-pixel noise: that showed as grain); 24 gaussian
+		// taps are dense enough for the small smears of clear glass
+		float spin = 0.0;
 		for (int i = 0; i < 24; i++) {
 			float r = sqrt((float(i) + 0.5) / 24.0);
 			float a = float(i) * 2.39996 + spin;              // golden angle: even spread
