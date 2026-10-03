@@ -1168,43 +1168,6 @@ static void render_glass(struct fx_gles_render_pass *pass, struct fx_texture *te
 	pop_fx_debug(renderer);
 }
 
-// swayctl: the surface's shape (its alpha) drawn at its place into a
-// full-size buffer, for glass over shaped panes. NULL without a mask source.
-static struct wlr_texture *glass_mask(struct fx_gles_render_pass *pass,
-		const struct wlr_render_texture_options *src, const struct wlr_box *pane,
-		const pixman_region32_t *clip, int reach) {
-	struct fx_framebuffer *fbo = pass->fx_offscreen_buffers->effects_buffer_swapped;
-	if (!src->texture || !fbo) {
-		return NULL;
-	}
-	pixman_region32_t region;
-	pixman_region32_init(&region);
-	pixman_region32_copy(&region, clip);
-	wlr_region_expand(&region, &region, reach);
-	pixman_region32_intersect_rect(&region, &region, 0, 0,
-		fbo->buffer->width, fbo->buffer->height);
-
-	fx_framebuffer_bind(fbo);
-	wlr_render_pass_add_rect(&pass->base, &(struct wlr_render_rect_options) {
-		.box = { 0, 0, fbo->buffer->width, fbo->buffer->height },
-		.color = { 0, 0, 0, 0 },
-		.clip = &region,
-		.blend_mode = WLR_RENDER_BLEND_MODE_NONE,
-	});
-	wlr_render_pass_add_texture(&pass->base, &(struct wlr_render_texture_options) {
-		.texture = src->texture,
-		.src_box = src->src_box,
-		.dst_box = *pane,
-		.transform = src->transform,
-		.clip = &region,
-		.blend_mode = WLR_RENDER_BLEND_MODE_NONE,
-		.filter_mode = WLR_SCALE_FILTER_BILINEAR,
-	});
-	fx_framebuffer_bind(pass->buffer);
-	pixman_region32_fini(&region);
-	return fx_texture_from_buffer(&pass->buffer->renderer->wlr_renderer, fbo->buffer);
-}
-
 void fx_render_pass_add_blur(struct fx_gles_render_pass *pass,
 		struct fx_render_blur_pass_options *fx_options) {
 	if (pass->fx_offscreen_buffers == NULL) {
@@ -1295,15 +1258,18 @@ void fx_render_pass_add_blur(struct fx_gles_render_pass *pass,
 	tex_options->clipped_region = fx_options->clipped_region;
 	const struct fx_glass_options *glass = &fx_options->glass;
 	if (glass->refraction > 0 || glass->chroma > 0 || glass->highlight > 0) {
-		struct wlr_texture *mask = NULL;
-		if (fx_options->ignore_transparent && mask_src.texture) {
-			mask = glass_mask(pass, &mask_src, &pane, fx_options->tex_options.base.clip,
-				(int)ceilf(glass->edge + glass->refraction) + 2);
+		// shaped pane: the surface's own texture is the shape. Only a plain 2D
+		// texture covering the pane can be sampled that way; otherwise the
+		// pane is treated as a rounded box like the others.
+		struct fx_texture *mask = NULL;
+		if (fx_options->ignore_transparent && mask_src.texture
+				&& mask_src.transform == WL_OUTPUT_TRANSFORM_NORMAL) {
+			struct fx_texture *t = fx_get_texture(mask_src.texture);
+			if (t->target == GL_TEXTURE_2D) {
+				mask = t;
+			}
 		}
-		render_glass(pass, blur_texture, tex_options, &pane, glass, mask ? fx_get_texture(mask) : NULL);
-		if (mask) {
-			wlr_texture_destroy(mask);
-		}
+		render_glass(pass, blur_texture, tex_options, &pane, glass, mask);
 	} else {
 		fx_render_pass_add_texture(pass, tex_options);
 	}

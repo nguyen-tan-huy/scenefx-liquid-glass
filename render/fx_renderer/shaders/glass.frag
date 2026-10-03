@@ -33,8 +33,16 @@ uniform float alpha;
 uniform bool use_mask;
 uniform sampler2D mask;
 
+// The shape is where the surface isn't fully transparent: a glass card's own
+// fill can be only a few percent opaque, so any alpha counts (smoothed over
+// the anti-aliased outline), not how much. `mask` is the surface's own
+// texture, covering the pane's box.
 float mask_at(vec2 px) {
-	return texture2D(mask, px / tex_size).a;
+	vec2 uv = (px - box_pos) / box_size;
+	if (uv.x < 0.0 || uv.y < 0.0 || uv.x > 1.0 || uv.y > 1.0) {
+		return 0.0;
+	}
+	return clamp(texture2D(mask, uv).a / 0.01, 0.0, 1.0);
 }
 
 float rounded_box(vec2 p, vec2 half_size, float r) {
@@ -58,7 +66,7 @@ void main() {
 	float bevel;
 	if (use_mask) {
 		float a = mask_at(px);
-		if (a <= 0.004) {
+		if (a <= 0.0) {
 			discard;
 		}
 		// march 16 directions out to the bevel width; the nearest edge gives
