@@ -56,13 +56,13 @@ float mask_at(vec2 px) {
 // 16 directions each, staggered so no direction is favoured
 float field(vec2 q, float r) {
 	float sum = mask_at(q);
-	for (int i = 0; i < 16; i++) {
-		float a = float(i) * 0.392699;
+	for (int i = 0; i < 24; i++) {
+		float a = float(i) * 0.261799;
 		vec2 d1 = vec2(cos(a), sin(a));
-		vec2 d2 = vec2(cos(a + 0.19635), sin(a + 0.19635));
+		vec2 d2 = vec2(cos(a + 0.1309), sin(a + 0.1309));
 		sum += mask_at(q + d1 * r * 0.333) + mask_at(q + d2 * r * 0.667) + mask_at(q + d1 * r);
 	}
-	return sum / 49.0;
+	return sum / 73.0;
 }
 
 float rounded_box(vec2 p, vec2 half_size, float r) {
@@ -99,13 +99,30 @@ void main() {
 		if (c > 0.999) {
 			// deep inside (most of a big pane): flat, nothing to bend
 			n = vec2(0.0);
+			d = -bevel;
 		} else {
-			float g = bevel * 0.25;   // a wide step: a smooth slope, a smooth normal
+			// direction to the edge from the field's slope (a wide step: smooth)
+			float g = bevel * 0.5;
 			vec2 grad = vec2(field(px + vec2(g, 0.0), bevel) - field(px - vec2(g, 0.0), bevel),
 			                 field(px + vec2(0.0, g), bevel) - field(px - vec2(0.0, g), bevel));
 			n = -grad / max(length(grad), 1e-5);
+			// exact distance along it: step out to the edge, then bisect on the
+			// mask's anti-aliased outline (sub-pixel, so no steps from row to row)
+			float lo = 0.0, hi = bevel;
+			for (int k = 1; k <= 8; k++) {
+				float t = float(k) * bevel / 8.0;
+				if (mask_at(px + n * t) < 0.5) {
+					hi = t;
+					lo = t - bevel / 8.0;
+					break;
+				}
+			}
+			for (int k = 0; k < 6; k++) {
+				float mid = 0.5 * (lo + hi);
+				if (mask_at(px + n * mid) < 0.5) { hi = mid; } else { lo = mid; }
+			}
+			d = -0.5 * (lo + hi);
 		}
-		d = -clamp((c - 0.5) * 2.0, 0.0, 1.0) * bevel;
 		coverage = a;
 	} else {
 		float r = min(radius, min(half_size.x, half_size.y));
@@ -166,20 +183,25 @@ void main() {
 
 	// Fresnel: the tilted bevel reflects a bit of the sky
 	float fresnel = pow(1.0 - cos(tilt), 3.0);
-	color = mix(color, vec3(1.0), 0.35 * fresnel * highlight);
+	color = mix(color, vec3(1.0), 0.15 * fresnel * highlight);
 
-	// specular edge, as on macOS: a thin bright line along the rim, strongest
-	// on the two corners the light rakes (top left, and its reflection at the
-	// bottom right), fading along the other two sides
+	// Light through a thick, liquid-smooth pane (like clear glass or water
+	// under a lamp): a crisp bright line right on the rim, a darker band just
+	// inside it where the steep bevel reflects the dark surroundings instead
+	// of letting light through, and a second thin reflection further in.
+	// All follow the edge evenly; the light's direction only makes one side
+	// a little brighter, so no corner turns into a bright blob.
+	float depth = -d;                                         // px from the rim
 	vec2 light = normalize(vec2(-0.6, -0.8));
-	float rake = abs(dot(n, light));                         // both lit sides
-	float spec = pow(rake, 3.0);
-	float line = exp(-(-d) * 1.1);                           // 1-2 px line
-	float glow = exp(-(-d) * 0.25) * 0.25;                   // soft inner glow
-	color += highlight * (line * (0.25 + 0.75 * spec) + glow * spec);
+	float lit = 0.55 + 0.45 * max(dot(n, light), 0.0);        // toward the light: brighter
+	float rimline = exp(-depth * 1.4);                        // ~1 px
+	float dark_band = exp(-pow((x - 0.2) / 0.16, 2.0));       // just inside the rim
+	float inner = exp(-pow((x - 0.48) / 0.12, 2.0));          // soft inner reflection
+	color *= 1.0 - 0.25 * dark_band * highlight;
+	color += highlight * (0.85 * rimline * lit + 0.12 * inner * lit);
 	// depth: the lower inside edge a little darker, as a thick pane casts on itself
 	float low = max(dot(n, vec2(0.0, 1.0)), 0.0);
-	color *= 1.0 - 0.08 * low * rim * rim;
+	color *= 1.0 - 0.06 * low * rim * rim;
 
 	// faint sheen across the top third, like light on the curved front
 	float top = clamp(1.0 - (p.y + half_size.y) / max(box_size.y * 0.35, 1.0), 0.0, 1.0);
