@@ -100,13 +100,25 @@ void main() {
 				vec2 dir = vec2(cos(ang), sin(ang));
 				float h1 = reach;
 				float h2 = reach;
-				for (int k = 1; k <= 12; k++) {
-					float dist = float(k) * reach / 12.0;
-					if (h1 == reach && mask_at(px + dir * dist) < 0.5) {
-						h1 = dist;
+				// 24 steps, and the edge placed between the last inside and the
+				// first outside step by the mask's (anti-aliased) value: smooth
+				// distances, no blocky bands
+				float prev1 = 1.0, prev2 = 1.0;
+				for (int k = 1; k <= 24; k++) {
+					float dist = float(k) * reach / 24.0;
+					if (h1 == reach) {
+						float m = mask_at(px + dir * dist);
+						if (m < 0.5) {
+							h1 = dist - reach / 24.0 * clamp((0.5 - m) / max(prev1 - m, 1e-3), 0.0, 1.0);
+						}
+						prev1 = m;
 					}
-					if (h2 == reach && mask_at(px - dir * dist) < 0.5) {
-						h2 = dist;
+					if (h2 == reach) {
+						float m = mask_at(px - dir * dist);
+						if (m < 0.5) {
+							h2 = dist - reach / 24.0 * clamp((0.5 - m) / max(prev2 - m, 1e-3), 0.0, 1.0);
+						}
+						prev2 = m;
 					}
 				}
 				nearest = min(nearest, min(h1, h2));
@@ -159,11 +171,14 @@ void main() {
 		vec2 t = vec2(-n.y, n.x);
 		vec3 acc = vec3(0.0);
 		float wsum = 0.0;
-		for (int i = 0; i < 12; i++) {
-			float r = sqrt((float(i) + 0.5) / 12.0);
-			float a = float(i) * 2.39996;                     // golden angle: even spread
-			vec2 off = (n * cos(a) * 1.7 + t * sin(a) * 0.6) * r * smear;
-			float w = 1.0 - 0.55 * r;                         // denser in the middle
+		// the pattern turns from pixel to pixel (interleaved gradient noise),
+		// so its taps blend into a smooth smear instead of ghost copies
+		float spin = 6.28318 * fract(52.9829189 * fract(dot(px, vec2(0.06711056, 0.00583715))));
+		for (int i = 0; i < 24; i++) {
+			float r = sqrt((float(i) + 0.5) / 24.0);
+			float a = float(i) * 2.39996 + spin;              // golden angle: even spread
+			vec2 off = (n * cos(a) * 1.5 + t * sin(a) * 0.8) * r * smear;
+			float w = exp(-2.0 * r * r);                      // gaussian
 			acc += sample_rgb(base + off, disp) * w;
 			wsum += w;
 		}
