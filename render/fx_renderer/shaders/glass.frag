@@ -153,19 +153,18 @@ void main() {
 	float tilt = atan(slope);                            // surface angle from flat
 	// Snell, air -> glass (n = 1.5): how far the ray leans inside the pane
 	float bent = tilt - asin(sin(tilt) / 1.5);
-	float shift = tan(bent) * refraction;                // px across the pane's thickness
+	// macOS-like lens: the backdrop is pulled in hard right at the rim (a
+	// convex edge magnifies), the flat middle stays put
+	float shift = tan(bent) * refraction * (1.0 + 1.2 * u * u);
 
 	// What's behind is seen sharp, only bent by the bevel (no smear): the
 	// glass shows itself by how light passes through it, below.
 	float rim = 1.0 - x;
 	vec3 color = sample_rgb(px - n * shift, n * chroma * 0.6 * rim * rim);
 
-	// light carried through the thick rim: what's behind it a little brighter
-	// and richer in color there
-	float carry = rim * rim;
+	// vibrancy: what's seen through the glass a touch brighter and more vivid
 	vec3 grey = vec3(dot(color, vec3(0.2126, 0.7152, 0.0722)));
-	color = mix(color, mix(grey, color, 1.25), 0.5 * carry);
-	color *= 1.0 + 0.10 * carry * highlight;
+	color = mix(grey, color, 1.12) * (1.0 + 0.04 * highlight);
 
 	// Keep the text readable (WCAG 4.5:1 against the text's own color): only
 	// where the backdrop is too close to it, and only as much as needed.
@@ -192,24 +191,18 @@ void main() {
 	float fresnel = pow(1.0 - cos(tilt), 3.0);
 	color = mix(color, vec3(1.0), 0.35 * fresnel * highlight);
 
-	// rim lights: key from the top left, weaker bounce from the bottom right,
-	// as thin lines riding the outermost pixels of the bevel
-	vec2 light = normalize(vec2(-0.55, -0.85));
-	float key = pow(max(dot(n, light), 0.0), 1.5);
-	float bounce = pow(max(dot(n, -light), 0.0), 2.0) * 0.45;
-	float line = 0.7 * exp(-(-d) * 0.6) + 0.35 * exp(-(-d) * 0.2);   // soft line + glow
-	color += highlight * line * (key + bounce);
-	// caustic: the curved rim focuses light coming from the top left into a
-	// soft bright band just inside the opposite (bottom right) edge
-	vec2 lightdir = normalize(vec2(-0.55, -0.85));
-	float facing = max(dot(n, -lightdir), 0.0);
-	float band = exp(-pow((x - 0.55) / 0.22, 2.0));          // a little way in from the rim
-	color += highlight * 0.16 * band * facing * facing;
-	// a broad diagonal sheen across the face, as light glances off the curve
-	vec2 q = (px - box_pos) / max(box_size, vec2(1.0));
-	float diag = q.x * 0.55 + q.y * 0.85;
-	float sheen = exp(-pow((diag - 0.35) / 0.18, 2.0));
-	color += highlight * 0.06 * sheen * (use_mask ? 0.6 : 1.0);
+	// specular edge, as on macOS: a thin bright line along the rim, strongest
+	// on the two corners the light rakes (top left, and its reflection at the
+	// bottom right), fading along the other two sides
+	vec2 light = normalize(vec2(-0.6, -0.8));
+	float rake = abs(dot(n, light));                         // both lit sides
+	float spec = pow(rake, 3.0);
+	float line = exp(-(-d) * 1.1);                           // 1-2 px line
+	float glow = exp(-(-d) * 0.25) * 0.25;                   // soft inner glow
+	color += highlight * (line * (0.25 + 0.75 * spec) + glow * spec);
+	// depth: the lower inside edge a little darker, as a thick pane casts on itself
+	float low = max(dot(n, vec2(0.0, 1.0)), 0.0);
+	color *= 1.0 - 0.08 * low * rim * rim;
 
 	// faint sheen across the top third, like light on the curved front
 	float top = clamp(1.0 - (p.y + half_size.y) / max(box_size.y * 0.35, 1.0), 0.0, 1.0);
