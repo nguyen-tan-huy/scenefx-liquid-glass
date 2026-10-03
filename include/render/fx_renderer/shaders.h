@@ -192,6 +192,8 @@ struct glass_shader {
 	GLint chroma;
 	GLint highlight;
 	GLint alpha;
+	GLint use_mask;
+	GLint mask;
 };
 
 bool link_glass_program(struct glass_shader *shader);
