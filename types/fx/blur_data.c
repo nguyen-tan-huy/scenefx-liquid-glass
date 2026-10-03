@@ -23,7 +23,10 @@ bool blur_data_should_parameters_blur_effects(struct blur_data *blur_data) {
 }
 
 int blur_data_calc_size(struct blur_data *blur_data) {
-	return pow(2, blur_data->num_passes + 1) * blur_data->radius;
+	// swayctl: + room for liquid glass, which samples the backdrop up to ~100 px
+	// away (refraction + smear): a partial redraw must repaint that far too, or
+	// the glass shows stale pixels (smear "sometimes there, sometimes not")
+	return pow(2, blur_data->num_passes + 1) * blur_data->radius + 112;
 }
 
 static float lerp(float a, float b, float f) {

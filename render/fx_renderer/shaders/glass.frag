@@ -148,7 +148,8 @@ void main() {
 	// ellipse of samples (long along the normal, the direction the bevel bends
 	// light) that grows toward the rim; on the flat top it shrinks to one point.
 	float rim = 1.0 - x;
-	float smear = refraction * 0.6 * pow(rim, 1.5) + 4.0 * rim;
+	// a soft smear across the whole pane, much stronger toward the rim
+	float smear = refraction * (0.35 + 0.6 * pow(rim, 1.5)) + 4.0 * rim;
 	vec2 base = px - n * shift;
 	vec2 disp = n * chroma * 0.6 * rim * rim;
 	vec3 color;
