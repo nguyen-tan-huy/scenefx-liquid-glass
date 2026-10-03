@@ -2246,6 +2246,7 @@ static void scene_entry_render(struct render_list_entry *entry, const struct ren
 				.edge = blur->glass.edge * data->scale,
 				.chroma = blur->glass.chroma * data->scale,
 				.highlight = blur->glass.highlight,
+				.text = blur->glass.text,
 			},
 			.use_optimized_blur = blur->should_only_blur_bottom_layer,
 			.blur_data = &scene->blur_data,

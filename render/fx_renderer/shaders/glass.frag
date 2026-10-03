@@ -28,6 +28,10 @@ uniform float edge;        // bevel width, px
 uniform float refraction;  // pane thickness: how far the bevel can shift the backdrop, px
 uniform float chroma;      // dispersion at the rim, px
 uniform float highlight;   // rim light, 0..1
+// The text drawn on this pane: 0 unknown, 1 light, 2 dark. Where what's behind
+// the glass is too close to it in brightness, the glass darkens (light text)
+// or lightens (dark text) just enough to keep the text readable.
+uniform int text_mode;
 uniform float alpha;
 // Shaped panes (notification cards inside a big transparent surface): the
 // surface's own alpha, drawn into a full-size buffer, gives the shape; the
@@ -72,23 +76,45 @@ void main() {
 		if (a <= 0.0) {
 			discard;
 		}
-		// march 16 directions out to the bevel width; the nearest edge gives
-		// the distance, all edges within reach (weighted) give the normal
-		bevel = max(edge, 4.0);
-		float nearest = bevel;
+		// The bevel grows with the pane: up to `reach` on a big pane, but never
+		// more than about half the pane's local thickness, so a small pill
+		// still has a flat top. March 8 axes both ways out to `reach`: the
+		// nearest edge gives the distance, the thinnest axis the thickness,
+		// all edges within reach (weighted) the normal.
+		float reach = max(edge * 2.5, 48.0);
+		float nearest = reach;
+		float thickness = 2.0 * reach;
 		vec2 dir_sum = vec2(0.0);
-		for (int i = 0; i < 16; i++) {
-			float ang = float(i) * 0.392699;  // 2 pi / 16
-			vec2 dir = vec2(cos(ang), sin(ang));
-			for (int k = 1; k <= 12; k++) {
-				float dist = float(k) * bevel / 12.0;
-				if (mask_at(px + dir * dist) < 0.5) {
-					nearest = min(nearest, dist);
-					dir_sum += dir * (bevel - dist);
-					break;
-				}
+		// most of a big pane is far from any edge: one ring of probes says so
+		bool interior = true;
+		for (int i = 0; i < 8; i++) {
+			float ang = float(i) * 0.785398;  // 2 pi / 8
+			if (mask_at(px + vec2(cos(ang), sin(ang)) * reach) < 0.5) {
+				interior = false;
+				break;
 			}
 		}
+		if (!interior) {
+			for (int i = 0; i < 8; i++) {
+				float ang = float(i) * 0.392699;  // pi / 8: 8 axes cover all 16 directions
+				vec2 dir = vec2(cos(ang), sin(ang));
+				float h1 = reach;
+				float h2 = reach;
+				for (int k = 1; k <= 12; k++) {
+					float dist = float(k) * reach / 12.0;
+					if (h1 == reach && mask_at(px + dir * dist) < 0.5) {
+						h1 = dist;
+					}
+					if (h2 == reach && mask_at(px - dir * dist) < 0.5) {
+						h2 = dist;
+					}
+				}
+				nearest = min(nearest, min(h1, h2));
+				thickness = min(thickness, h1 + h2);
+				dir_sum += dir * (reach - h1) - dir * (reach - h2);
+			}
+		}
+		bevel = max(min(reach, thickness * 0.45), 4.0);
 		d = -nearest;
 		n = dir_sum / max(length(dir_sum), 1e-4);
 		coverage = a;
@@ -102,7 +128,9 @@ void main() {
 		         rounded_box(p + vec2(0.0, 1.0), half_size, r) - rounded_box(p - vec2(0.0, 1.0), half_size, r));
 		n = n / max(length(n), 1e-4);
 		coverage = clamp(0.5 - d, 0.0, 1.0);  // anti-aliased outline
-		bevel = max(min(edge, min(half_size.x, half_size.y)), 1.0);
+		// deeper on a big pane: up to 40% of the way to the middle
+		float half_min = min(half_size.x, half_size.y);
+		bevel = clamp(max(edge, half_min * 0.4), 1.0, max(half_min, 1.0));
 	}
 
 	// position across the bevel: 0 at the rim, 1 where the flat top begins
@@ -120,7 +148,7 @@ void main() {
 	// ellipse of samples (long along the normal, the direction the bevel bends
 	// light) that grows toward the rim; on the flat top it shrinks to one point.
 	float rim = 1.0 - x;
-	float smear = refraction * 0.45 * rim * rim + 1.5 * rim;
+	float smear = refraction * 0.6 * pow(rim, 1.5) + 4.0 * rim;
 	vec2 base = px - n * shift;
 	vec2 disp = n * chroma * 0.6 * rim * rim;
 	vec3 color;
@@ -139,6 +167,27 @@ void main() {
 			wsum += w;
 		}
 		color = acc / wsum;
+	}
+
+	// Keep the text readable (WCAG 4.5:1 against the text's own color): only
+	// where the backdrop is too close to it, and only as much as needed.
+	if (text_mode != 0) {
+		vec3 lin = pow(max(color, vec3(0.0)), vec3(2.2));
+		float lum = dot(lin, vec3(0.2126, 0.7152, 0.0722));
+		if (text_mode == 1) {
+			// light text (~0.91): the backdrop may be at most ~0.18
+			float target = 0.18;
+			if (lum > target) {
+				color *= pow(target / lum, 1.0 / 2.2);
+			}
+		} else {
+			// dark text (~0.012): the backdrop must be at least ~0.25
+			float target = 0.25;
+			if (lum < target) {
+				float t = (target - lum) / max(1.0 - lum, 1e-3);
+				color = mix(color, vec3(1.0), pow(t, 1.0 / 2.2));
+			}
+		}
 	}
 
 	// Fresnel: the tilted bevel reflects a bit of the sky

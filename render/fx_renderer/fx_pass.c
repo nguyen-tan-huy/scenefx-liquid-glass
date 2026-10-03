@@ -1144,6 +1144,7 @@ static void render_glass(struct fx_gles_render_pass *pass, struct fx_texture *te
 	glUniform1f(shader.refraction, glass->refraction);
 	glUniform1f(shader.chroma, glass->chroma);
 	glUniform1f(shader.highlight, glass->highlight);
+	glUniform1i(shader.text_mode, glass->text);
 	glUniform1f(shader.alpha, options->alpha ? *options->alpha : 1.0f);
 	glUniform1i(shader.use_mask, mask != NULL);
 	glUniform1i(shader.mask, 1);
@@ -1269,7 +1270,7 @@ void fx_render_pass_add_blur(struct fx_gles_render_pass *pass,
 	tex_options->base.transform = WL_OUTPUT_TRANSFORM_NORMAL;
 	tex_options->clipped_region = fx_options->clipped_region;
 	const struct fx_glass_options *glass = &fx_options->glass;
-	if (glass->refraction > 0 || glass->chroma > 0 || glass->highlight > 0) {
+	if (glass->refraction > 0 || glass->chroma > 0 || glass->highlight > 0 || glass->text) {
 		// shaped pane: the surface's own texture is the shape. Only a plain 2D
 		// texture covering the pane can be sampled that way; otherwise the
 		// pane is treated as a rounded box like the others.
