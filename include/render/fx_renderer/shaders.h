@@ -193,6 +193,7 @@ struct glass_shader {
 	GLint highlight;
 	GLint alpha;
 	GLint use_mask;
+	GLint mask_src;  // x, y, w, h of the mask texture that is shown, 0..1
 	GLint mask;
 };
 

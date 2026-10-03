@@ -34,6 +34,7 @@ uniform float alpha;
 // rim is found by looking for its edge instead of using a rounded box.
 uniform bool use_mask;
 uniform sampler2D mask;
+uniform vec4 mask_src;     // the part of the mask texture that is shown (x, y, w, h; 0..1)
 
 // The shape is where the surface isn't fully transparent: a glass card's own
 // fill can be only a few percent opaque, so any alpha counts (smoothed over
@@ -44,7 +45,7 @@ float mask_at(vec2 px) {
 	if (uv.x < 0.0 || uv.y < 0.0 || uv.x > 1.0 || uv.y > 1.0) {
 		return 0.0;
 	}
-	return clamp(texture2D(mask, uv).a / 0.01, 0.0, 1.0);
+	return clamp(texture2D(mask, mask_src.xy + uv * mask_src.zw).a / 0.01, 0.0, 1.0);
 }
 
 float rounded_box(vec2 p, vec2 half_size, float r) {

@@ -1117,7 +1117,7 @@ static struct fx_framebuffer *get_main_buffer_blur(struct fx_gles_render_pass *p
 // swayctl: draw the blurred backdrop as liquid glass inside `pane`
 static void render_glass(struct fx_gles_render_pass *pass, struct fx_texture *texture,
 		struct fx_render_texture_options *tex_options, const struct wlr_box *pane,
-		const struct fx_glass_options *glass, struct fx_texture *mask) {
+		const struct fx_glass_options *glass, struct fx_texture *mask, const struct wlr_fbox *mask_box) {
 	struct wlr_render_texture_options *options = &tex_options->base;
 	struct fx_renderer *renderer = pass->buffer->renderer;
 	struct glass_shader shader = renderer->shaders.glass;
@@ -1147,6 +1147,18 @@ static void render_glass(struct fx_gles_render_pass *pass, struct fx_texture *te
 	glUniform1f(shader.alpha, options->alpha ? *options->alpha : 1.0f);
 	glUniform1i(shader.use_mask, mask != NULL);
 	glUniform1i(shader.mask, 1);
+	// Only part of the mask's texture may be on screen (a window drawn by the
+	// client with invisible resize margins around it: its source box); the
+	// shape must come from that part, stretched over the pane, not the whole.
+	float mx = 0, my = 0, mw = 1, mh = 1;
+	if (mask && mask_box && mask_box->width > 0 && mask_box->height > 0
+			&& mask->wlr_texture.width > 0 && mask->wlr_texture.height > 0) {
+		mx = mask_box->x / mask->wlr_texture.width;
+		my = mask_box->y / mask->wlr_texture.height;
+		mw = mask_box->width / mask->wlr_texture.width;
+		mh = mask_box->height / mask->wlr_texture.height;
+	}
+	glUniform4f(shader.mask_src, mx, my, mw, mh);
 	if (mask) {
 		glActiveTexture(GL_TEXTURE1);
 		glBindTexture(mask->target, mask->tex);
@@ -1269,7 +1281,7 @@ void fx_render_pass_add_blur(struct fx_gles_render_pass *pass,
 				mask = t;
 			}
 		}
-		render_glass(pass, blur_texture, tex_options, &pane, glass, mask);
+		render_glass(pass, blur_texture, tex_options, &pane, glass, mask, &mask_src.src_box);
 	} else {
 		fx_render_pass_add_texture(pass, tex_options);
 	}
