@@ -6,8 +6,8 @@
 //    normal, so the backdrop is magnified and pulled inward near the rim and
 //    untouched in the middle; red/green/blue bend a little differently
 //    (dispersion), strongest at the very edge;
-//  - the curved rim also smears what's behind it (more toward the edge), as a
-//    thick pane does, instead of showing a sharp shifted copy;
+//  - no smear: light through the glass shows it instead (brighter, richer
+//    color carried through the rim, a caustic band, a diagonal sheen);
 //  - the rim catches a key light from the top left and a weaker one from the
 //    opposite side (light bouncing inside the glass), as two thin bright lines;
 //  - glancing angles reflect more (Fresnel): the bevel brightens slightly.
@@ -155,35 +155,17 @@ void main() {
 	float bent = tilt - asin(sin(tilt) / 1.5);
 	float shift = tan(bent) * refraction;                // px across the pane's thickness
 
-	// What's seen through the curved rim is smeared, not just moved: a thick
-	// curved pane scatters the light, more the steeper it is. Gather a small
-	// ellipse of samples (long along the normal, the direction the bevel bends
-	// light) that grows toward the rim; on the flat top it shrinks to one point.
+	// What's behind is seen sharp, only bent by the bevel (no smear): the
+	// glass shows itself by how light passes through it, below.
 	float rim = 1.0 - x;
-	// clear glass: sharp in the middle, smearing more and more toward the rim
-	float smear = refraction * 0.7 * rim * rim * rim + 3.0 * rim * rim;
-	vec2 base = px - n * shift;
-	vec2 disp = n * chroma * 0.6 * rim * rim;
-	vec3 color;
-	if (smear < 0.75) {
-		color = sample_rgb(base, disp);
-	} else {
-		vec2 t = vec2(-n.y, n.x);
-		vec3 acc = vec3(0.0);
-		float wsum = 0.0;
-		// fixed pattern (no per-pixel noise: that showed as grain); 24 gaussian
-		// taps are dense enough for the small smears of clear glass
-		float spin = 0.0;
-		for (int i = 0; i < 24; i++) {
-			float r = sqrt((float(i) + 0.5) / 24.0);
-			float a = float(i) * 2.39996 + spin;              // golden angle: even spread
-			vec2 off = (n * cos(a) * 1.5 + t * sin(a) * 0.8) * r * smear;
-			float w = exp(-2.0 * r * r);                      // gaussian
-			acc += sample_rgb(base + off, disp) * w;
-			wsum += w;
-		}
-		color = acc / wsum;
-	}
+	vec3 color = sample_rgb(px - n * shift, n * chroma * 0.6 * rim * rim);
+
+	// light carried through the thick rim: what's behind it a little brighter
+	// and richer in color there
+	float carry = rim * rim;
+	vec3 grey = vec3(dot(color, vec3(0.2126, 0.7152, 0.0722)));
+	color = mix(color, mix(grey, color, 1.25), 0.5 * carry);
+	color *= 1.0 + 0.10 * carry * highlight;
 
 	// Keep the text readable (WCAG 4.5:1 against the text's own color): only
 	// where the backdrop is too close to it, and only as much as needed.
@@ -217,6 +199,18 @@ void main() {
 	float bounce = pow(max(dot(n, -light), 0.0), 2.0) * 0.45;
 	float line = 0.7 * exp(-(-d) * 0.6) + 0.35 * exp(-(-d) * 0.2);   // soft line + glow
 	color += highlight * line * (key + bounce);
+	// caustic: the curved rim focuses light coming from the top left into a
+	// soft bright band just inside the opposite (bottom right) edge
+	vec2 lightdir = normalize(vec2(-0.55, -0.85));
+	float facing = max(dot(n, -lightdir), 0.0);
+	float band = exp(-pow((x - 0.55) / 0.22, 2.0));          // a little way in from the rim
+	color += highlight * 0.16 * band * facing * facing;
+	// a broad diagonal sheen across the face, as light glances off the curve
+	vec2 q = (px - box_pos) / max(box_size, vec2(1.0));
+	float diag = q.x * 0.55 + q.y * 0.85;
+	float sheen = exp(-pow((diag - 0.35) / 0.18, 2.0));
+	color += highlight * 0.06 * sheen * (use_mask ? 0.6 : 1.0);
+
 	// faint sheen across the top third, like light on the curved front
 	float top = clamp(1.0 - (p.y + half_size.y) / max(box_size.y * 0.35, 1.0), 0.0, 1.0);
 	if (!use_mask) {  // a shaped surface's box isn't the pane's: no sheen there
