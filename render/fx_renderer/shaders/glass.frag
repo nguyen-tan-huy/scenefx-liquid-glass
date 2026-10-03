@@ -53,24 +53,6 @@ float mask_at(vec2 px) {
 	return clamp(texture2D(mask, mask_src.xy + uv * mask_src.zw).a / 0.003, 0.0, 1.0);
 }
 
-// mean coverage of the mask around q out to r, 12 directions x 4 steps;
-// each direction stops at the first step outside the pane, so a neighbouring
-// pane across a narrow gap doesn't count as part of this one
-float field(vec2 q, float r) {
-	float sum = mask_at(q);
-	for (int i = 0; i < 12; i++) {
-		float a = float(i) * 0.523599;
-		vec2 dir = vec2(cos(a), sin(a));
-		float open = 1.0;
-		for (int k = 1; k <= 4; k++) {
-			float m = mask_at(q + dir * r * float(k) * 0.25) * open;
-			sum += m;
-			open = step(0.5, m);
-		}
-	}
-	return sum / 49.0;
-}
-
 float rounded_box(vec2 p, vec2 half_size, float r) {
 	vec2 q = abs(p) - half_size + r;
 	return length(max(q, 0.0)) + min(max(q.x, q.y), 0.0) - r;
@@ -95,52 +77,44 @@ void main() {
 		if (a <= 0.0) {
 			discard;
 		}
-		// A smooth coverage field (the mask averaged over two rings around the
-		// point): 0.5 at the edge, rising to 1 a bevel's width inside. Its
-		// level gives the position across the bevel and its slope the normal,
-		// both continuous, so the bent backdrop has no jagged steps and every
-		// pane gets the same rim whatever its size.
+		// Distance to the edge along 8 directions: step out (8 px first, so a
+		// narrow gap to a neighbouring pane is never jumped), then bisect on
+		// the mask's anti-aliased outline for a sub-pixel distance. A soft
+		// minimum of the 8 gives the depth, their weighted directions the
+		// normal: smooth (no stripes), and cheap - the flat middle of a pane
+		// costs 24 reads, a rim pixel at most ~64.
 		bevel = max(edge * 1.4, 24.0);
-		// cheap test first: a bevel's width all around inside = the flat
-		// middle (most of a pane), nothing more to do there
-		bool inside = true;
-		for (int i = 0; i < 8 && inside; i++) {
-			float a = float(i) * 0.785398;
-			vec2 dir = vec2(cos(a), sin(a));
-			// step out, so a gap to a neighbouring pane isn't jumped over
-			// 8 px first (narrower than any gap between panes), then half way, then all
-			if (mask_at(px + dir * 8.0) < 0.5 || mask_at(px + dir * bevel * 0.5) < 0.5
-					|| mask_at(px + dir * bevel) < 0.5) {
-				inside = false;
+		float k = 6.0 / bevel;
+		float wsum = 0.0;
+		vec2 nsum = vec2(0.0);
+		bool any_edge = false;
+		for (int i = 0; i < 8; i++) {
+			float ang = float(i) * 0.785398;
+			vec2 dir = vec2(cos(ang), sin(ang));
+			float s1 = 8.0, s2 = bevel * 0.5, s3 = bevel;
+			float lo = 0.0, hi = -1.0;
+			if (mask_at(px + dir * s1) < 0.5) { hi = s1; }
+			else if (mask_at(px + dir * s2) < 0.5) { lo = s1; hi = s2; }
+			else if (mask_at(px + dir * s3) < 0.5) { lo = s2; hi = s3; }
+			float dist = bevel;
+			if (hi > 0.0) {
+				any_edge = true;
+				for (int j = 0; j < 5; j++) {
+					float mid = 0.5 * (lo + hi);
+					if (mask_at(px + dir * mid) < 0.5) { hi = mid; } else { lo = mid; }
+				}
+				dist = 0.5 * (lo + hi);
 			}
+			float w = exp(-k * dist);
+			wsum += w;
+			nsum += dir * w;
 		}
-		float c = inside ? 1.0 : field(px, bevel);
-		if (c > 0.999) {
-			// deep inside (most of a big pane): flat, nothing to bend
-			n = vec2(0.0);
+		if (!any_edge) {
+			n = vec2(0.0);   // the flat middle
 			d = -bevel;
 		} else {
-			// direction to the edge from the field's slope (a wide step: smooth)
-			float g = bevel * 0.5;
-			vec2 grad = vec2(field(px + vec2(g, 0.0), bevel) - field(px - vec2(g, 0.0), bevel),
-			                 field(px + vec2(0.0, g), bevel) - field(px - vec2(0.0, g), bevel));
-			n = -grad / max(length(grad), 1e-5);
-			// exact distance along it: step out to the edge, then bisect on the
-			// mask's anti-aliased outline (sub-pixel, so no steps from row to row)
-			float lo = 0.0, hi = bevel;
-			for (int k = 1; k <= 8; k++) {
-				float t = float(k) * bevel / 8.0;
-				if (mask_at(px + n * t) < 0.5) {
-					hi = t;
-					lo = t - bevel / 8.0;
-					break;
-				}
-			}
-			for (int k = 0; k < 6; k++) {
-				float mid = 0.5 * (lo + hi);
-				if (mask_at(px + n * mid) < 0.5) { hi = mid; } else { lo = mid; }
-			}
-			d = -0.5 * (lo + hi);
+			n = nsum / max(length(nsum), 1e-5);
+			d = -clamp(-log(wsum / 8.0) / k, 0.0, bevel);   // soft minimum
 		}
 		coverage = a;
 	} else {
