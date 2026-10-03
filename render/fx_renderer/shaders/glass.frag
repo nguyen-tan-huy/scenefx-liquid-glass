@@ -108,8 +108,10 @@ void main() {
 			float a = float(i) * 0.785398;
 			vec2 dir = vec2(cos(a), sin(a));
 			// step out, so a gap to a neighbouring pane isn't jumped over
-			for (int k = 1; k <= 4; k++) {
-				if (mask_at(px + dir * bevel * float(k) * 0.25) < 0.5) { inside = false; break; }
+			// 8 px first (narrower than any gap between panes), then half way, then all
+			if (mask_at(px + dir * 8.0) < 0.5 || mask_at(px + dir * bevel * 0.5) < 0.5
+					|| mask_at(px + dir * bevel) < 0.5) {
+				inside = false;
 			}
 		}
 		float c = inside ? 1.0 : field(px, bevel);

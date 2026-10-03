@@ -2940,18 +2940,6 @@ static bool apply_blur_region(struct wlr_scene_node *node, struct blur_data *blu
 			0, 0, output->width, output->height);
 	}
 
-	// swayctl: liquid glass reads the backdrop across the whole pane (refraction
-	// and smear); redrawing only part of it leaves bands of stale glass
-	if (!pixman_region32_empty(&intersection) && node->type == WLR_SCENE_NODE_BLUR) {
-		struct wlr_scene_blur *b = wlr_scene_blur_from_node(node);
-		if (b->glass.refraction > 0 || b->glass.text) {
-			pixman_region32_union(&intersection, &intersection, &node_visible_region);
-			struct wlr_output *output = render_data->output->output;
-			pixman_region32_intersect_rect(&intersection, &intersection,
-				0, 0, output->width, output->height);
-		}
-	}
-
 	if (!pixman_region32_empty(&intersection)) {
 		should_compensate_blur = true;
 
