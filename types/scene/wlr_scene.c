@@ -1187,6 +1187,14 @@ void wlr_scene_blur_set_alpha(struct wlr_scene_blur *blur, float alpha) {
 	scene_node_update(&blur->node, NULL);
 }
 
+void wlr_scene_blur_set_glass(struct wlr_scene_blur *blur, struct fx_glass_options glass) {
+	if (memcmp(&blur->glass, &glass, sizeof(glass)) == 0) {
+		return;
+	}
+	blur->glass = glass;
+	scene_node_update(&blur->node, NULL);
+}
+
 void wlr_scene_blur_set_strength(struct wlr_scene_blur *blur, float strength) {
 	if (blur->strength == strength) {
 		return;
@@ -2232,6 +2240,12 @@ static void scene_entry_render(struct render_list_entry *entry, const struct ren
 				.clip_box = &dst_box,
 				.corners = fx_corner_radii_scale(blur_corners, data->scale),
 				.discard_transparent = false,
+			},
+			.glass = {
+				.refraction = blur->glass.refraction * data->scale,
+				.edge = blur->glass.edge * data->scale,
+				.chroma = blur->glass.chroma * data->scale,
+				.highlight = blur->glass.highlight,
 			},
 			.use_optimized_blur = blur->should_only_blur_bottom_layer,
 			.blur_data = &scene->blur_data,

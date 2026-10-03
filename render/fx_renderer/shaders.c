@@ -20,6 +20,7 @@
 #include "blur1_frag_src.h"
 #include "blur2_frag_src.h"
 #include "blur_effects_frag_src.h"
+#include "glass_frag_src.h"
 
 GLuint compile_shader(GLuint type, const GLchar *src) {
 	GLuint shader = glCreateShader(type);
@@ -357,5 +358,27 @@ bool link_blur_effects_program(struct blur_effects_shader *shader) {
 	shader->contrast = glGetUniformLocation(prog, "contrast");
 	shader->saturation = glGetUniformLocation(prog, "saturation");
 
+	return true;
+}
+
+bool link_glass_program(struct glass_shader *shader) {
+	GLuint prog;
+	shader->program = prog = link_program(glass_frag_src);
+	if (!shader->program) {
+		return false;
+	}
+	shader->proj = glGetUniformLocation(prog, "proj");
+	shader->tex_proj = glGetUniformLocation(prog, "tex_proj");
+	shader->tex = glGetUniformLocation(prog, "tex");
+	shader->pos_attrib = glGetAttribLocation(prog, "pos");
+	shader->tex_size = glGetUniformLocation(prog, "tex_size");
+	shader->box_pos = glGetUniformLocation(prog, "box_pos");
+	shader->box_size = glGetUniformLocation(prog, "box_size");
+	shader->radius = glGetUniformLocation(prog, "radius");
+	shader->edge = glGetUniformLocation(prog, "edge");
+	shader->refraction = glGetUniformLocation(prog, "refraction");
+	shader->chroma = glGetUniformLocation(prog, "chroma");
+	shader->highlight = glGetUniformLocation(prog, "highlight");
+	shader->alpha = glGetUniformLocation(prog, "alpha");
 	return true;
 }

@@ -30,6 +30,7 @@
 
 #include "scenefx/types/fx/blur_data.h"
 #include "scenefx/types/fx/clipped_region.h"
+#include "scenefx/types/fx/glass.h"
 #include "scenefx/types/linked_node.h"
 
 struct wlr_output;
@@ -178,6 +179,7 @@ struct wlr_scene_blur {
 
 	float strength;
 	float alpha;
+	struct fx_glass_options glass; // swayctl
 
 	bool should_only_blur_bottom_layer;
 
@@ -669,6 +671,9 @@ void wlr_scene_blur_set_alpha(struct wlr_scene_blur *blur, float alpha);
  * fade-out effect.
  */
 void wlr_scene_blur_set_strength(struct wlr_scene_blur *blur, float strength);
+
+/** swayctl: render the blur as liquid glass (all 0: plain blur) */
+void wlr_scene_blur_set_glass(struct wlr_scene_blur *blur, struct fx_glass_options glass);
 
 /**
  * Sets the region where to clip the blur.

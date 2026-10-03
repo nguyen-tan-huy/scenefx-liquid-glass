@@ -8,6 +8,7 @@
 
 #include "render/egl.h"
 #include "types/fx/clipped_region.h"
+#include "scenefx/types/fx/glass.h"
 
 struct fx_gles_render_pass {
 	struct wlr_render_pass base;
@@ -83,6 +84,7 @@ struct fx_render_box_shadow_options {
 };
 
 struct fx_render_blur_pass_options {
+	struct fx_glass_options glass;
 	struct fx_render_texture_options tex_options;
 	struct fx_framebuffer *current_buffer;
 	struct blur_data *blur_data;

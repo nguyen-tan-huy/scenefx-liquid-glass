@@ -1114,6 +1114,46 @@ static struct fx_framebuffer *get_main_buffer_blur(struct fx_gles_render_pass *p
 	return fx_options->current_buffer;
 }
 
+// swayctl: draw the blurred backdrop as liquid glass inside `pane`
+static void render_glass(struct fx_gles_render_pass *pass, struct fx_texture *texture,
+		struct fx_render_texture_options *tex_options, const struct wlr_box *pane,
+		const struct fx_glass_options *glass) {
+	struct wlr_render_texture_options *options = &tex_options->base;
+	struct fx_renderer *renderer = pass->buffer->renderer;
+	struct glass_shader shader = renderer->shaders.glass;
+
+	struct wlr_box dst_box;
+	wlr_render_texture_options_get_dst_box(options, &dst_box);
+	struct wlr_fbox src_fbox = { .x = 0, .y = 0, .width = 1, .height = 1 };
+
+	push_fx_debug(renderer);
+	setup_blending(WLR_RENDER_BLEND_MODE_PREMULTIPLIED);
+	glUseProgram(shader.program);
+	glActiveTexture(GL_TEXTURE0);
+	glBindTexture(texture->target, texture->tex);
+	glTexParameteri(texture->target, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+	glTexParameteri(texture->target, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+	glUniform1i(shader.tex, 0);
+
+	float radius = tex_options->corners.top_left;
+	glUniform2f(shader.tex_size, texture->wlr_texture.width, texture->wlr_texture.height);
+	glUniform2f(shader.box_pos, pane->x, pane->y);
+	glUniform2f(shader.box_size, pane->width, pane->height);
+	glUniform1f(shader.radius, radius);
+	glUniform1f(shader.edge, glass->edge > 0 ? glass->edge : 18.0f);
+	glUniform1f(shader.refraction, glass->refraction);
+	glUniform1f(shader.chroma, glass->chroma);
+	glUniform1f(shader.highlight, glass->highlight);
+	glUniform1f(shader.alpha, options->alpha ? *options->alpha : 1.0f);
+
+	set_proj_matrix(shader.proj, pass->projection_matrix, &dst_box);
+	set_tex_matrix(shader.tex_proj, options->transform, &src_fbox);
+	render(&dst_box, options->clip, shader.pos_attrib);
+
+	glBindTexture(texture->target, 0);
+	pop_fx_debug(renderer);
+}
+
 void fx_render_pass_add_blur(struct fx_gles_render_pass *pass,
 		struct fx_render_blur_pass_options *fx_options) {
 	if (pass->fx_offscreen_buffers == NULL) {
@@ -1163,6 +1203,9 @@ void fx_render_pass_add_blur(struct fx_gles_render_pass *pass,
 		stencil_mask_close(true);
 	}
 
+	// the pane (the layer's box) before dst_box becomes the whole buffer
+	struct wlr_box pane_box = tex_options->base.dst_box;
+
 	// Draw the blurred texture
 	tex_options->base.dst_box = (struct wlr_box) {
 		.x = 0,
@@ -1176,11 +1219,17 @@ void fx_render_pass_add_blur(struct fx_gles_render_pass *pass,
 		.width = buffer->buffer->width,
 		.height = buffer->buffer->height,
 	};
+	struct wlr_box pane = pane_box;
 	tex_options->base.texture = &blur_texture->wlr_texture;
 	// since we're capturing from the fbo, transform will always be normal
 	tex_options->base.transform = WL_OUTPUT_TRANSFORM_NORMAL;
 	tex_options->clipped_region = fx_options->clipped_region;
-	fx_render_pass_add_texture(pass, tex_options);
+	const struct fx_glass_options *glass = &fx_options->glass;
+	if (glass->refraction > 0 || glass->chroma > 0 || glass->highlight > 0) {
+		render_glass(pass, blur_texture, tex_options, &pane, glass);
+	} else {
+		fx_render_pass_add_texture(pass, tex_options);
+	}
 
 	wlr_texture_destroy(&blur_texture->wlr_texture);
 

@@ -176,4 +176,24 @@ struct blur_effects_shader {
 
 bool link_blur_effects_program(struct blur_effects_shader *shader);
 
+// swayctl: liquid glass over a blurred backdrop
+struct glass_shader {
+	GLuint program;
+	GLint proj;
+	GLint tex_proj;
+	GLint tex;
+	GLint pos_attrib;
+	GLint tex_size;
+	GLint box_pos;
+	GLint box_size;
+	GLint radius;
+	GLint edge;
+	GLint refraction;
+	GLint chroma;
+	GLint highlight;
+	GLint alpha;
+};
+
+bool link_glass_program(struct glass_shader *shader);
+
 #endif
