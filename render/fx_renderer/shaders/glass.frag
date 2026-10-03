@@ -52,17 +52,16 @@ float mask_at(vec2 px) {
 	return clamp(texture2D(mask, mask_src.xy + uv * mask_src.zw).a / 0.01, 0.0, 1.0);
 }
 
-// mean coverage of the mask over three rings (r/3, 2r/3, r) around q,
-// 16 directions each, staggered so no direction is favoured
+// mean coverage of the mask over two rings (r/2, r) around q, 12 directions
 float field(vec2 q, float r) {
 	float sum = mask_at(q);
-	for (int i = 0; i < 24; i++) {
-		float a = float(i) * 0.261799;
+	for (int i = 0; i < 12; i++) {
+		float a = float(i) * 0.523599;
 		vec2 d1 = vec2(cos(a), sin(a));
-		vec2 d2 = vec2(cos(a + 0.1309), sin(a + 0.1309));
-		sum += mask_at(q + d1 * r * 0.333) + mask_at(q + d2 * r * 0.667) + mask_at(q + d1 * r);
+		vec2 d2 = vec2(cos(a + 0.261799), sin(a + 0.261799));
+		sum += mask_at(q + d2 * r * 0.5) + mask_at(q + d1 * r);
 	}
-	return sum / 73.0;
+	return sum / 25.0;
 }
 
 float rounded_box(vec2 p, vec2 half_size, float r) {
@@ -95,7 +94,14 @@ void main() {
 		// both continuous, so the bent backdrop has no jagged steps and every
 		// pane gets the same rim whatever its size.
 		bevel = max(edge * 1.4, 24.0);
-		float c = field(px, bevel);
+		// cheap test first: a bevel's width all around inside = the flat
+		// middle (most of a pane), nothing more to do there
+		bool inside = true;
+		for (int i = 0; i < 8; i++) {
+			float a = float(i) * 0.785398;
+			if (mask_at(px + vec2(cos(a), sin(a)) * bevel) < 0.5) { inside = false; break; }
+		}
+		float c = inside ? 1.0 : field(px, bevel);
 		if (c > 0.999) {
 			// deep inside (most of a big pane): flat, nothing to bend
 			n = vec2(0.0);
@@ -195,13 +201,16 @@ void main() {
 	vec2 light = normalize(vec2(-0.6, -0.8));
 	float lit = 0.55 + 0.45 * max(dot(n, light), 0.0);        // toward the light: brighter
 	float rimline = exp(-depth * 1.4);                        // ~1 px
-	float dark_band = exp(-pow((x - 0.2) / 0.16, 2.0));       // just inside the rim
-	float inner = exp(-pow((x - 0.48) / 0.12, 2.0));          // soft inner reflection
-	color *= 1.0 - 0.25 * dark_band * highlight;
-	color += highlight * (0.85 * rimline * lit + 0.12 * inner * lit);
+	// glossy, not dark: a bright sheen along the inside of the rim, strongest
+	// where the rim faces up toward the light (top), like polished glass
+	float up = max(dot(n, vec2(0.0, -1.0)), 0.0);
+	float gloss = exp(-pow((x - 0.22) / 0.14, 2.0)) * (0.35 + 0.65 * up);
+	float inner = exp(-pow((x - 0.5) / 0.12, 2.0));           // soft inner reflection
+	color = mix(color, vec3(1.0), 0.32 * gloss * highlight);
+	color += highlight * (0.9 * rimline * lit + 0.08 * inner * lit);
 	// depth: the lower inside edge a little darker, as a thick pane casts on itself
 	float low = max(dot(n, vec2(0.0, 1.0)), 0.0);
-	color *= 1.0 - 0.06 * low * rim * rim;
+	color *= 1.0 - 0.03 * low * rim * rim;
 
 	// faint sheen across the top third, like light on the curved front
 	float top = clamp(1.0 - (p.y + half_size.y) / max(box_size.y * 0.35, 1.0), 0.0, 1.0);
