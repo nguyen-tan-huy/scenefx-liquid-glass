@@ -1184,6 +1184,23 @@ void fx_render_pass_add_blur(struct fx_gles_render_pass *pass,
 		}
 		buffer = get_main_buffer_blur(pass, &blur_options);
 	}
+	const struct fx_glass_options *g = &fx_options->glass;
+	bool glass_on = g->refraction > 0 || g->chroma > 0 || g->highlight > 0;
+	if (!buffer && glass_on && pass->fx_offscreen_buffers->effects_buffer) {
+		// swayctl: clear glass (no blur): refract an untouched copy of what's
+		// behind. Copy a margin around the damage too: the rim samples up to
+		// `refraction` px away.
+		struct fx_framebuffer *copy = pass->fx_offscreen_buffers->effects_buffer;
+		pixman_region32_t region;
+		pixman_region32_init(&region);
+		pixman_region32_copy(&region, fx_options->tex_options.base.clip);
+		wlr_region_expand(&region, &region, (int)ceilf(g->refraction + g->chroma) + 2);
+		pixman_region32_intersect_rect(&region, &region, 0, 0,
+			pass->buffer->buffer->width, pass->buffer->buffer->height);
+		fx_render_pass_read_to_buffer(pass, &region, copy, pass->buffer);
+		pixman_region32_fini(&region);
+		buffer = copy;
+	}
 	if (!buffer) {
 		goto finish;
 	}
