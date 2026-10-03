@@ -49,19 +49,26 @@ float mask_at(vec2 px) {
 	if (uv.x < 0.0 || uv.y < 0.0 || uv.x > 1.0 || uv.y > 1.0) {
 		return 0.0;
 	}
-	return clamp(texture2D(mask, mask_src.xy + uv * mask_src.zw).a / 0.01, 0.0, 1.0);
+	// any alpha at all (1/255 included: a nearly clear pane is stored as 1-3/255)
+	return clamp(texture2D(mask, mask_src.xy + uv * mask_src.zw).a / 0.003, 0.0, 1.0);
 }
 
-// mean coverage of the mask over two rings (r/2, r) around q, 12 directions
+// mean coverage of the mask around q out to r, 12 directions x 4 steps;
+// each direction stops at the first step outside the pane, so a neighbouring
+// pane across a narrow gap doesn't count as part of this one
 float field(vec2 q, float r) {
 	float sum = mask_at(q);
 	for (int i = 0; i < 12; i++) {
 		float a = float(i) * 0.523599;
-		vec2 d1 = vec2(cos(a), sin(a));
-		vec2 d2 = vec2(cos(a + 0.261799), sin(a + 0.261799));
-		sum += mask_at(q + d2 * r * 0.5) + mask_at(q + d1 * r);
+		vec2 dir = vec2(cos(a), sin(a));
+		float open = 1.0;
+		for (int k = 1; k <= 4; k++) {
+			float m = mask_at(q + dir * r * float(k) * 0.25) * open;
+			sum += m;
+			open = step(0.5, m);
+		}
 	}
-	return sum / 25.0;
+	return sum / 49.0;
 }
 
 float rounded_box(vec2 p, vec2 half_size, float r) {
@@ -97,9 +104,13 @@ void main() {
 		// cheap test first: a bevel's width all around inside = the flat
 		// middle (most of a pane), nothing more to do there
 		bool inside = true;
-		for (int i = 0; i < 8; i++) {
+		for (int i = 0; i < 8 && inside; i++) {
 			float a = float(i) * 0.785398;
-			if (mask_at(px + vec2(cos(a), sin(a)) * bevel) < 0.5) { inside = false; break; }
+			vec2 dir = vec2(cos(a), sin(a));
+			// step out, so a gap to a neighbouring pane isn't jumped over
+			for (int k = 1; k <= 4; k++) {
+				if (mask_at(px + dir * bevel * float(k) * 0.25) < 0.5) { inside = false; break; }
+			}
 		}
 		float c = inside ? 1.0 : field(px, bevel);
 		if (c > 0.999) {
