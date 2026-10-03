@@ -27,6 +27,15 @@ uniform float refraction;  // pane thickness: how far the bevel can shift the ba
 uniform float chroma;      // dispersion at the rim, px
 uniform float highlight;   // rim light, 0..1
 uniform float alpha;
+// Shaped panes (notification cards inside a big transparent surface): the
+// surface's own alpha, drawn into a full-size buffer, gives the shape; the
+// rim is found by looking for its edge instead of using a rounded box.
+uniform bool use_mask;
+uniform sampler2D mask;
+
+float mask_at(vec2 px) {
+	return texture2D(mask, px / tex_size).a;
+}
 
 float rounded_box(vec2 p, vec2 half_size, float r) {
 	vec2 q = abs(p) - half_size + r;
@@ -43,17 +52,49 @@ void main() {
 	vec2 px = v_texcoord * tex_size;
 	vec2 half_size = box_size * 0.5;
 	vec2 p = px - (box_pos + half_size);
-	float r = min(radius, min(half_size.x, half_size.y));
-	float d = rounded_box(p, half_size, r);  // < 0 inside
-	if (d > 0.5) {
-		discard;
+	float d;       // signed distance to the pane's edge, < 0 inside
+	vec2 n;        // outward normal, in the plane
+	float coverage;
+	float bevel;
+	if (use_mask) {
+		float a = mask_at(px);
+		if (a <= 0.004) {
+			discard;
+		}
+		// march 16 directions out to the bevel width; the nearest edge gives
+		// the distance, all edges within reach (weighted) give the normal
+		bevel = max(edge, 4.0);
+		float nearest = bevel;
+		vec2 dir_sum = vec2(0.0);
+		for (int i = 0; i < 16; i++) {
+			float ang = float(i) * 0.392699;  // 2 pi / 16
+			vec2 dir = vec2(cos(ang), sin(ang));
+			for (int k = 1; k <= 12; k++) {
+				float dist = float(k) * bevel / 12.0;
+				if (mask_at(px + dir * dist) < 0.5) {
+					nearest = min(nearest, dist);
+					dir_sum += dir * (bevel - dist);
+					break;
+				}
+			}
+		}
+		d = -nearest;
+		n = dir_sum / max(length(dir_sum), 1e-4);
+		coverage = a;
+	} else {
+		float r = min(radius, min(half_size.x, half_size.y));
+		d = rounded_box(p, half_size, r);
+		if (d > 0.5) {
+			discard;
+		}
+		n = vec2(rounded_box(p + vec2(1.0, 0.0), half_size, r) - rounded_box(p - vec2(1.0, 0.0), half_size, r),
+		         rounded_box(p + vec2(0.0, 1.0), half_size, r) - rounded_box(p - vec2(0.0, 1.0), half_size, r));
+		n = n / max(length(n), 1e-4);
+		coverage = clamp(0.5 - d, 0.0, 1.0);  // anti-aliased outline
+		bevel = max(min(edge, min(half_size.x, half_size.y)), 1.0);
 	}
-	vec2 n = vec2(rounded_box(p + vec2(1.0, 0.0), half_size, r) - rounded_box(p - vec2(1.0, 0.0), half_size, r),
-	              rounded_box(p + vec2(0.0, 1.0), half_size, r) - rounded_box(p - vec2(0.0, 1.0), half_size, r));
-	n = n / max(length(n), 1e-4);  // outward, in the plane
 
 	// position across the bevel: 0 at the rim, 1 where the flat top begins
-	float bevel = max(min(edge, min(half_size.x, half_size.y)), 1.0);
 	float x = clamp(-d / bevel, 0.0, 1.0);
 	// quarter-circle profile h(x) = sqrt(1 - (1 - x)^2); its slope is the tilt
 	float u = 1.0 - x;
@@ -78,8 +119,9 @@ void main() {
 	color += highlight * line * (key + bounce);
 	// faint sheen across the top third, like light on the curved front
 	float top = clamp(1.0 - (p.y + half_size.y) / max(box_size.y * 0.35, 1.0), 0.0, 1.0);
-	color += highlight * 0.05 * top * top;
+	if (!use_mask) {  // a shaped surface's box isn't the pane's: no sheen there
+		color += highlight * 0.05 * top * top;
+	}
 
-	float coverage = clamp(0.5 - d, 0.0, 1.0);  // anti-aliased outline
 	gl_FragColor = vec4(min(color, 1.0), 1.0) * coverage * alpha;
 }

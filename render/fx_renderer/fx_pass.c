@@ -1117,7 +1117,7 @@ static struct fx_framebuffer *get_main_buffer_blur(struct fx_gles_render_pass *p
 // swayctl: draw the blurred backdrop as liquid glass inside `pane`
 static void render_glass(struct fx_gles_render_pass *pass, struct fx_texture *texture,
 		struct fx_render_texture_options *tex_options, const struct wlr_box *pane,
-		const struct fx_glass_options *glass) {
+		const struct fx_glass_options *glass, struct fx_texture *mask) {
 	struct wlr_render_texture_options *options = &tex_options->base;
 	struct fx_renderer *renderer = pass->buffer->renderer;
 	struct glass_shader shader = renderer->shaders.glass;
@@ -1145,13 +1145,64 @@ static void render_glass(struct fx_gles_render_pass *pass, struct fx_texture *te
 	glUniform1f(shader.chroma, glass->chroma);
 	glUniform1f(shader.highlight, glass->highlight);
 	glUniform1f(shader.alpha, options->alpha ? *options->alpha : 1.0f);
+	glUniform1i(shader.use_mask, mask != NULL);
+	glUniform1i(shader.mask, 1);
+	if (mask) {
+		glActiveTexture(GL_TEXTURE1);
+		glBindTexture(mask->target, mask->tex);
+		glTexParameteri(mask->target, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+		glTexParameteri(mask->target, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+		glActiveTexture(GL_TEXTURE0);
+	}
 
 	set_proj_matrix(shader.proj, pass->projection_matrix, &dst_box);
 	set_tex_matrix(shader.tex_proj, options->transform, &src_fbox);
 	render(&dst_box, options->clip, shader.pos_attrib);
 
 	glBindTexture(texture->target, 0);
+	if (mask) {
+		glActiveTexture(GL_TEXTURE1);
+		glBindTexture(mask->target, 0);
+		glActiveTexture(GL_TEXTURE0);
+	}
 	pop_fx_debug(renderer);
+}
+
+// swayctl: the surface's shape (its alpha) drawn at its place into a
+// full-size buffer, for glass over shaped panes. NULL without a mask source.
+static struct wlr_texture *glass_mask(struct fx_gles_render_pass *pass,
+		const struct wlr_render_texture_options *src, const struct wlr_box *pane,
+		const pixman_region32_t *clip, int reach) {
+	struct fx_framebuffer *fbo = pass->fx_offscreen_buffers->effects_buffer_swapped;
+	if (!src->texture || !fbo) {
+		return NULL;
+	}
+	pixman_region32_t region;
+	pixman_region32_init(&region);
+	pixman_region32_copy(&region, clip);
+	wlr_region_expand(&region, &region, reach);
+	pixman_region32_intersect_rect(&region, &region, 0, 0,
+		fbo->buffer->width, fbo->buffer->height);
+
+	fx_framebuffer_bind(fbo);
+	wlr_render_pass_add_rect(&pass->base, &(struct wlr_render_rect_options) {
+		.box = { 0, 0, fbo->buffer->width, fbo->buffer->height },
+		.color = { 0, 0, 0, 0 },
+		.clip = &region,
+		.blend_mode = WLR_RENDER_BLEND_MODE_NONE,
+	});
+	wlr_render_pass_add_texture(&pass->base, &(struct wlr_render_texture_options) {
+		.texture = src->texture,
+		.src_box = src->src_box,
+		.dst_box = *pane,
+		.transform = src->transform,
+		.clip = &region,
+		.blend_mode = WLR_RENDER_BLEND_MODE_NONE,
+		.filter_mode = WLR_SCALE_FILTER_BILINEAR,
+	});
+	fx_framebuffer_bind(pass->buffer);
+	pixman_region32_fini(&region);
+	return fx_texture_from_buffer(&pass->buffer->renderer->wlr_renderer, fbo->buffer);
 }
 
 void fx_render_pass_add_blur(struct fx_gles_render_pass *pass,
@@ -1222,6 +1273,7 @@ void fx_render_pass_add_blur(struct fx_gles_render_pass *pass,
 
 	// the pane (the layer's box) before dst_box becomes the whole buffer
 	struct wlr_box pane_box = tex_options->base.dst_box;
+	struct wlr_render_texture_options mask_src = tex_options->base;  // the surface, if masked
 
 	// Draw the blurred texture
 	tex_options->base.dst_box = (struct wlr_box) {
@@ -1243,7 +1295,15 @@ void fx_render_pass_add_blur(struct fx_gles_render_pass *pass,
 	tex_options->clipped_region = fx_options->clipped_region;
 	const struct fx_glass_options *glass = &fx_options->glass;
 	if (glass->refraction > 0 || glass->chroma > 0 || glass->highlight > 0) {
-		render_glass(pass, blur_texture, tex_options, &pane, glass);
+		struct wlr_texture *mask = NULL;
+		if (fx_options->ignore_transparent && mask_src.texture) {
+			mask = glass_mask(pass, &mask_src, &pane, fx_options->tex_options.base.clip,
+				(int)ceilf(glass->edge + glass->refraction) + 2);
+		}
+		render_glass(pass, blur_texture, tex_options, &pane, glass, mask ? fx_get_texture(mask) : NULL);
+		if (mask) {
+			wlr_texture_destroy(mask);
+		}
 	} else {
 		fx_render_pass_add_texture(pass, tex_options);
 	}

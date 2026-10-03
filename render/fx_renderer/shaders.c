@@ -380,5 +380,7 @@ bool link_glass_program(struct glass_shader *shader) {
 	shader->chroma = glGetUniformLocation(prog, "chroma");
 	shader->highlight = glGetUniformLocation(prog, "highlight");
 	shader->alpha = glGetUniformLocation(prog, "alpha");
+	shader->use_mask = glGetUniformLocation(prog, "use_mask");
+	shader->mask = glGetUniformLocation(prog, "mask");
 	return true;
 }
