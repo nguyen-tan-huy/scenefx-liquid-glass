@@ -6,6 +6,8 @@
 //    normal, so the backdrop is magnified and pulled inward near the rim and
 //    untouched in the middle; red/green/blue bend a little differently
 //    (dispersion), strongest at the very edge;
+//  - the curved rim also smears what's behind it (more toward the edge), as a
+//    thick pane does, instead of showing a sharp shifted copy;
 //  - the rim catches a key light from the top left and a weaker one from the
 //    opposite side (light bouncing inside the glass), as two thin bright lines;
 //  - glancing angles reflect more (Fresnel): the bevel brightens slightly.
@@ -112,7 +114,31 @@ void main() {
 	float bent = tilt - asin(sin(tilt) / 1.5);
 	float shift = tan(bent) * refraction;                // px across the pane's thickness
 
-	vec3 color = sample_rgb(px - n * shift, n * chroma * (1.0 - x) * (1.0 - x));
+	// What's seen through the curved rim is smeared, not just moved: a thick
+	// curved pane scatters the light, more the steeper it is. Gather a small
+	// ellipse of samples (long along the normal, the direction the bevel bends
+	// light) that grows toward the rim; on the flat top it shrinks to one point.
+	float rim = 1.0 - x;
+	float smear = refraction * 0.45 * rim * rim + 1.5 * rim;
+	vec2 base = px - n * shift;
+	vec2 disp = n * chroma * 0.6 * rim * rim;
+	vec3 color;
+	if (smear < 0.75) {
+		color = sample_rgb(base, disp);
+	} else {
+		vec2 t = vec2(-n.y, n.x);
+		vec3 acc = vec3(0.0);
+		float wsum = 0.0;
+		for (int i = 0; i < 12; i++) {
+			float r = sqrt((float(i) + 0.5) / 12.0);
+			float a = float(i) * 2.39996;                     // golden angle: even spread
+			vec2 off = (n * cos(a) * 1.7 + t * sin(a) * 0.6) * r * smear;
+			float w = 1.0 - 0.55 * r;                         // denser in the middle
+			acc += sample_rgb(base + off, disp) * w;
+			wsum += w;
+		}
+		color = acc / wsum;
+	}
 
 	// Fresnel: the tilted bevel reflects a bit of the sky
 	float fresnel = pow(1.0 - cos(tilt), 3.0);
@@ -123,7 +149,7 @@ void main() {
 	vec2 light = normalize(vec2(-0.55, -0.85));
 	float key = pow(max(dot(n, light), 0.0), 1.5);
 	float bounce = pow(max(dot(n, -light), 0.0), 2.0) * 0.45;
-	float line = exp(-(-d) * 0.9) + 0.35 * exp(-(-d) * 0.25);   // sharp line + soft glow
+	float line = 0.7 * exp(-(-d) * 0.6) + 0.35 * exp(-(-d) * 0.2);   // soft line + glow
 	color += highlight * line * (key + bounce);
 	// faint sheen across the top third, like light on the curved front
 	float top = clamp(1.0 - (p.y + half_size.y) / max(box_size.y * 0.35, 1.0), 0.0, 1.0);
