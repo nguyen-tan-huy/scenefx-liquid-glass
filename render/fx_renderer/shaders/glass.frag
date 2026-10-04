@@ -1,24 +1,23 @@
-// Liquid glass (swayctl patch), modelled on a thick Tahoe pane:
+// Liquid glass — port of kube.io / winaviation liquid-glass-demo
+// (https://winaviation.github.io/liquid-glass-demo/, based on kube.io
+// "Liquid Glass in the Browser" + Apple WWDC 2025).
 //
-//  - the pane's surface is flat in the middle and curves down over a bevel
-//    of width `edge` at the rim (a quarter circle in profile);
-//  - light through it bends by Snell's law (glass ~1.5) using that surface's
-//    normal, so the backdrop is magnified and pulled inward hard near the rim
-//    and gently across the whole body (`thickness`: demo Glass Thickness);
-//    thickness also widens the rim band and its absorption/lighting, so a
-//    thick pane's edge reads as mass, not a hairline highlight;
-//  - red/green/blue bend a little differently (dispersion), strongest at the
-//    very edge;
-//  - thick glass absorbs: a Beer-Lambert band darkens the steep bevel (the
-//    path through the pane is longest there) and tints the body a little;
-//  - no smear: light through the glass shows it instead (brighter, richer
-//    color carried through the rim, a caustic band, a diagonal sheen);
-//  - the rim catches a key light from the top left and a weaker one from the
-//    opposite side (light bouncing inside the glass), as two thin bright lines;
-//  - glancing angles reflect more (Fresnel): the bevel brightens toward white;
-//  - polished gloss on top of that lighting: a crisp white core on the rim,
-//    a lamp reflection on the face where it turns toward the light, and a thin
-//    polished streak along that direction (all follow `highlight`).
+// Model:
+//  - the pane is flat inside the bezel and curves over a convex squircle
+//    profile h(x) = (1-(1-x)^4)^(1/4), x = 0 at the rim … 1 at the flat top;
+//  - a ray hits that surface, refracts by Snell (glass n = 1.5), then travels
+//    through the remaining glass: path = h(x)*bezel + thickness. The backdrop
+//    is sampled along that bent ray — a real magnifying bezel, not a painted
+//    highlight. Thickness only lengthens the path, so it strengthens the rim
+//    bend; the flat centre stays clear (rx = 0 there);
+//  - red/green/blue use slightly different IOR (dispersion), so high-contrast
+//    edges behind the rim split into colour fringes (demo "Refraction Scale"
+//    snap);
+//  - specular is a thin bright band on the very edge, strongest toward a key
+//    light from the upper-left (demo Specular Highlight map), plus a soft
+//    Fresnel wash on the tilted bevel;
+//  - optional light frost (glass_blur) and tint (glass_opacity / milk) sit on
+//    top of the refracted colour; text_mode keeps UI text readable.
 #ifdef GL_FRAGMENT_PRECISION_HIGH
 precision highp float;
 #else
@@ -32,11 +31,11 @@ uniform vec2 tex_size;     // backdrop size in px
 uniform vec2 box_pos;      // pane, in the same px space
 uniform vec2 box_size;
 uniform float radius;      // corner radius, px
-uniform float edge;        // bevel width, px
-uniform float thickness;   // body optical depth, px (whole-pane refraction)
-uniform float refraction;  // overall bend strength, px (scales rim + body)
-uniform float chroma;      // dispersion at the rim, px
-uniform float highlight;   // rim light, 0..1
+uniform float edge;        // bezel width, px (demo Bezel Width)
+uniform float thickness;   // glass optical depth, px (demo Glass Thickness)
+uniform float refraction;  // bend strength in px (demo Refraction Scale × field)
+uniform float chroma;      // dispersion 0..1 (colour split at the rim)
+uniform float highlight;   // specular opacity 0..1 (demo Specular Opacity)
 // The text drawn on this pane: 0 unknown, 1 light, 2 dark. Where what's behind
 // the glass is too close to it in brightness, the glass darkens (light text)
 // or lightens (dark text) just enough to keep the text readable.
@@ -82,24 +81,44 @@ vec3 texel_bilinear(vec2 px) {
 	return mix(mix(c00, c10, f.x), mix(c01, c11, f.x), f.y);
 }
 
-vec3 sample_rgb(vec2 px, vec2 shift) {
-	// color split only where there is one (the rim); elsewhere one lookup
-	if (dot(shift, shift) < 0.0025) {
-		return texel_bilinear(px);
+// Convex squircle (demo SurfaceEquations.convex_squircle). x: 0 rim, 1 flat.
+float demo_h(float x) {
+	float u = 1.0 - x;
+	return pow(max(1.0 - u * u * u * u, 0.0), 0.25);
+}
+
+// Snell displacement along the inward normal (demo calculateDisplacementMap1D).
+// Returns a signed-ish magnitude in glass units; caller applies direction.
+// positive = backdrop pulled toward the pane centre (convex magnify).
+float demo_disp(float x, float bezel_px, float thick_px, float ior) {
+	float xs = clamp(x, 0.0025, 1.0);
+	float y = demo_h(xs);
+	float eps = 0.002;
+	float y2 = demo_h(clamp(xs + eps, 0.0, 1.0));
+	float deriv = (y2 - y) / eps;
+	// keep the rim finite: squircle slope → ∞ at x = 0
+	deriv = clamp(deriv, -80.0, 80.0);
+	float mag = sqrt(deriv * deriv + 1.0);
+	float nx = -deriv / mag;
+	float ny = -1.0 / mag;
+	float eta = 1.0 / ior;
+	float d = ny;
+	float k = 1.0 - eta * eta * (1.0 - d * d);
+	if (k < 0.0) {
+		return 0.0;
 	}
-	return vec3(texel_bilinear(px - shift).r, texel_bilinear(px).g, texel_bilinear(px + shift).b);
+	float ks = sqrt(k);
+	float rx = -(eta * d + ks) * nx;
+	float ry = eta - (eta * d + ks) * ny;
+	// demo: remaining glass the ray still travels after the surface hit
+	float remaining = y * bezel_px + thick_px;
+	return rx * (remaining / max(abs(ry), 1e-4));
 }
 
 void main() {
 	vec2 px = v_texcoord * tex_size;
 	vec2 half_size = box_size * 0.5;
 	vec2 p = px - (box_pos + half_size);
-	// Optical depth in Tahoe units (200 px = the reference pane). Drives how
-	// wide and heavy the rim looks: a thick pane's edge is a broad band of
-	// curved glass, not a hairline highlight.
-	float pane = clamp(thickness / 200.0, 0.0, 7.5);
-	float rim_wide = 1.0 + 0.50 * min(pane, 3.5);   // 1.0 @0, 1.5 @200, 2.75 @1500
-	float rim_bend = 1.0 + 0.25 * min(pane, 3.0);   // stronger inward pull at the rim
 	float d;       // signed distance to the pane's edge, < 0 inside
 	float pull = 1.0;  // how clearly one edge is nearest (0 midway between two)
 	vec2 n;        // outward normal, in the plane
@@ -112,12 +131,9 @@ void main() {
 		}
 		// Distance to the edge along 8 directions: step out (8 px first, so a
 		// narrow gap to a neighbouring pane is never jumped), then bisect on
-		// the mask's anti-aliased outline for a sub-pixel distance. A soft
-		// minimum of the 8 gives the depth, their weighted directions the
-		// normal: smooth (no stripes), and cheap - the flat middle of a pane
-		// costs 24 reads, a rim pixel at most ~64.
-		bevel = max(edge * 1.4, 24.0) * rim_wide;
-		float k = 3.0 / bevel;   // soft: the normal turns smoothly round curves
+		// the mask's anti-aliased outline for a sub-pixel distance.
+		bevel = max(edge, 16.0);
+		float k = 3.0 / bevel;
 		float wsum = 0.0;
 		vec2 nsum = vec2(0.0);
 		bool any_edge = false;
@@ -133,7 +149,7 @@ void main() {
 			float dist = bevel;
 			if (hi > 0.0) {
 				any_edge = true;
-				for (int j = 0; j < 7; j++) {   // ~0.1 px: no stair steps in the depth
+				for (int j = 0; j < 7; j++) {
 					float mid = 0.5 * (lo + hi);
 					if (mask_at(px + dir * mid) < 0.5) { hi = mid; } else { lo = mid; }
 				}
@@ -144,9 +160,8 @@ void main() {
 			wsum += w;
 			nsum += dir * w;
 		}
-		// a thin pane (a pill) is thinner than two bevels: the bevel may be at
-		// most half its thickness here, so its middle line stays flat instead
-		// of tearing (top half pushed up, bottom half down)
+		// a thin pane (a pill) is thinner than two bezels: cap the bezel so the
+		// middle line stays flat instead of tearing
 		float thick = 2.0 * bevel;
 		for (int i = 0; i < 6; i++) {
 			thick = min(thick, dists[i] + dists[i + 6]);
@@ -154,15 +169,13 @@ void main() {
 		float soft_k = k;
 		bevel = max(min(bevel, thick * 0.5), 4.0);
 		if (!any_edge) {
-			n = vec2(0.0);   // the flat middle
+			n = vec2(0.0);
 			d = -bevel;
 		} else {
-			// opposite edges (the middle of a thin pill) cancel out: bend less
-			// there instead of flipping direction from pixel to pixel
 			vec2 nv = nsum / max(wsum, 1e-5);
 			pull = smoothstep(0.02, 0.25, length(nv));
 			n = nv / max(length(nv), 1e-5);
-			d = -clamp(-log(wsum / 12.0) / soft_k, 0.0, bevel);  // soft minimum
+			d = -clamp(-log(wsum / 12.0) / soft_k, 0.0, bevel);
 		}
 		coverage = a;
 	} else {
@@ -174,73 +187,50 @@ void main() {
 		n = vec2(rounded_box(p + vec2(1.0, 0.0), half_size, r) - rounded_box(p - vec2(1.0, 0.0), half_size, r),
 		         rounded_box(p + vec2(0.0, 1.0), half_size, r) - rounded_box(p - vec2(0.0, 1.0), half_size, r));
 		n = n / max(length(n), 1e-4);
-		coverage = clamp(0.5 - d, 0.0, 1.0);  // anti-aliased outline
-		// deeper on a big pane: up to 40% of the way to the middle; thicker
-		// glass also widens the curved band at the rim
+		coverage = clamp(0.5 - d, 0.0, 1.0);
 		float half_min = min(half_size.x, half_size.y);
-		bevel = clamp(max(edge * rim_wide, half_min * 0.4), 1.0, max(half_min, 1.0));
+		bevel = clamp(max(edge, half_min * 0.35), 1.0, max(half_min, 1.0));
 	}
 
-	// position across the bevel: 0 at the rim, 1 where the flat top begins
+	// position across the bezel: 0 at the rim, 1 where the flat top begins
 	float x = clamp(-d / bevel, 0.0, 1.0);
-	// quarter-circle profile h(x) = sqrt(1 - (1 - x)^2); its slope is the tilt
-	float u = 1.0 - x;
-	float slope = u / max(sqrt(1.0 - u * u), 0.08);       // dh/dx, steep at the rim
-	float tilt = atan(slope);                            // surface angle from flat
-	// Snell, air -> glass (n = 1.5): how far the ray leans inside the pane
-	float bent = tilt - asin(sin(tilt) / 1.5);
-	// Tahoe lens: the backdrop is pulled in hard right at the rim (a convex
-	// edge magnifies and bends what's behind into a visible caustic). A thicker
-	// pane pulls harder: the edge reads as mass, not just a highlight.
-	float shift = tan(bent) * refraction * (1.0 + 0.95 * u * u) * pull * rim_bend;
+	float depth = -d;   // px from the rim
 
-	// Whole-pane body (demo: Glass Thickness + Refraction Scale). Thick glass
-	// has optical depth across the entire surface, not only at the rim: what's
-	// behind shifts everywhere, more toward the edges. Sampled from outside
-	// each pixel = a mild magnifying lens over the panel, not just a bevel.
-	vec2 from_c = p / max(half_size, vec2(1e-3));
-	float rc = clamp(length(from_c), 0.0, 1.4);
-	// smooth dome: 0 at centre, 1 at the box edge
-	float body_h = rc * rc * (3.0 - 2.0 * clamp(rc, 0.0, 1.0));
-	float body_dh = 6.0 * clamp(rc, 0.0, 1.0) * (1.0 - clamp(rc, 0.0, 1.0));
-	float body_tilt = atan(body_dh * 0.22);
-	float body_bent = body_tilt - asin(sin(body_tilt) / 1.5);
-	// thickness drives body depth; refraction scales body + rim together
-	float refr_scale = refraction / max(48.0, 1.0);
-	float body_shift = tan(body_bent) * (thickness * 0.07) * (0.12 + 0.88 * body_h) * refr_scale;
-	vec2 body_dir = rc > 1e-3 ? normalize(p) : vec2(0.0);  // outward = magnify
-	// near the rim the bevel owns the shift; deeper inside the body dome does
-	float rim_own = 1.0 - smoothstep(0.0, max(bevel * 1.6, 8.0), -d);
-	vec2 total_shift = n * shift * pull * rim_own
-		+ body_dir * body_shift * (1.0 - 0.85 * rim_own);
-	float shift_mag = length(total_shift);
-	vec2 shift_dir = shift_mag > 1e-4 ? total_shift / shift_mag : n;
-
-	// What's behind is seen sharp, only bent by the glass (no smear): the
-	// glass shows itself by how light passes through it, below.
-	float rim = 1.0 - x;
-	// two taps a little apart along the bend: where the shift changes fast
-	// (near the rim) one sample per pixel shows stair steps
-	vec2 disp = shift_dir * chroma * 0.45 * (rim * rim + 0.35 * body_h);
-	// The lens squeezes a wider strip of the backdrop into the bend: one sample
-	// per pixel would skip over it (stair steps on lines). Four taps spread
-	// along the squeeze, filter it. A thicker rim squeezes a wider strip.
-	float spread = (0.5 + refraction * 0.18 * rim_wide * rim * rim + body_shift * 0.20) * pull;
-	vec2 base = px - total_shift;
-	vec3 color = 0.5 * (sample_rgb(base - shift_dir * spread * 0.5, disp)
-		+ sample_rgb(base + shift_dir * spread * 0.5, disp));
+	// --- refraction (demo displacement field) ---
+	// glass units: remaining path = h(x)*bezel + thickness. Normalise so
+	// `refraction` (px) is the rim pull at the current thickness — same role
+	// as demo's maximumDisplacement * refractionScale.
+	// `chroma` arrives in px (compositor sends refraction * fraction): it is
+	// the R↔B separation at the rim; 0 = all channels share one bend.
+	float ior_g = 1.50;
+	float ior_r = 1.475;
+	float ior_b = 1.530;
+	float denom = max(thickness * 1.05 + bevel * 0.35, 1.0);
+	float raw = demo_disp(x, bevel, thickness, ior_g);
+	float raw_r = demo_disp(x, bevel, thickness, ior_r);
+	float raw_b = demo_disp(x, bevel, thickness, ior_b);
+	float field = raw / denom;
+	float field_r = raw_r / denom;
+	float field_b = raw_b / denom;
+	float g_amt = field * refraction * pull;
+	float span = max(field_b - field_r, 1e-4);
+	float r_amt = g_amt - chroma * pull * (field - field_r) / span;
+	float b_amt = g_amt + chroma * pull * (field_b - field) / span;
+	vec2 base = px - n * g_amt;
+	vec2 base_r = px - n * r_amt;
+	vec2 base_b = px - n * b_amt;
+	// light smear along the bend so steep gradients don't stair-step
+	float spread = 0.35 + 0.12 * abs(g_amt);
+	vec3 col_g = 0.5 * (texel_bilinear(base - n * spread * 0.5)
+		+ texel_bilinear(base + n * spread * 0.5));
+	vec3 col_r = texel_bilinear(base_r);
+	vec3 col_b = texel_bilinear(base_b);
+	vec3 color = vec3(col_r.r, col_g.g, col_b.b);
 
 	// vibrancy: what's seen through the glass a touch brighter and more vivid
+	// (demo feColorMatrix saturate ~1.3 on the displaced image)
 	vec3 grey = vec3(dot(color, vec3(0.2126, 0.7152, 0.0722)));
-	color = mix(grey, color, 1.14) * (1.0 + 0.05 * highlight);
-
-	// Thick glass absorbs along the longest path (the steep bevel), and a
-	// little through the body: a green-grey Beer-Lambert band at the rim.
-	// The band widens and deepens with optical depth so the edge reads as mass.
-	float body_tint = clamp(thickness / 200.0, 0.0, 1.5) * body_h;
-	float rim_abs = clamp(0.55 + 0.10 * min(pane, 2.5), 0.0, 0.72);
-	color *= mix(vec3(1.0), vec3(0.62, 0.70, 0.68),
-		clamp(rim_abs * rim * rim + 0.10 * body_tint, 0.0, 0.78));
+	color = mix(grey, color, 1.18) * (1.0 + 0.04 * highlight);
 
 	// Keep the text readable (WCAG 4.5:1 against the text's own color): only
 	// where the backdrop is too close to it, and only as much as needed.
@@ -248,13 +238,11 @@ void main() {
 		vec3 lin = pow(max(color, vec3(0.0)), vec3(2.2));
 		float lum = dot(lin, vec3(0.2126, 0.7152, 0.0722));
 		if (text_mode == 1) {
-			// light text (~0.91): the backdrop may be at most ~0.18
 			float target = 0.18;
 			if (lum > target) {
 				color *= pow(target / lum, 1.0 / 2.2);
 			}
 		} else {
-			// dark text (~0.012): the backdrop must be at least ~0.25
 			float target = 0.25;
 			if (lum < target) {
 				float t = (target - lum) / max(1.0 - lum, 1e-3);
@@ -263,58 +251,21 @@ void main() {
 		}
 	}
 
-	// Fresnel: the tilted bevel reflects the sky — Tahoe's bright thin rim;
-	// a thicker bevel has more glancing surface, so a little stronger
-	float fresnel = pow(1.0 - cos(tilt), 3.0);
-	color = mix(color, vec3(1.0), (0.42 + 0.10 * min(pane, 2.0)) * fresnel * highlight);
-
-	// Light through a thick, liquid-smooth pane (like clear glass or water
-	// under a lamp): a crisp bright line right on the rim, a darker band just
-	// inside it where the steep bevel reflects the dark surroundings instead
-	// of letting light through, and a second thin reflection further in.
-	// All follow the edge evenly; the light's direction only makes one side
-	// a little brighter, so no corner turns into a bright blob. Bands widen
-	// with optical depth so a thick pane's rim is visibly heavy.
-	float depth = -d;                                         // px from the rim
+	// --- specular (demo calculateSpecularHighlight) ---
+	// thin band on the very edge; brightest where the rim faces the key light
 	vec2 light = normalize(vec2(-0.6, -0.8));
-	float lit = 0.55 + 0.45 * max(dot(n, light), 0.0);        // toward the light: brighter
-	float rimline = exp(-depth * 0.85 / rim_wide);            // thin, crisp
-	// glossy, not dark: a bright sheen along the inside of the rim, strongest
-	// where the rim faces up toward the light (top), like polished glass
-	float up = max(dot(n, vec2(0.0, -1.0)), 0.0);
-	float gloss = exp(-pow((x - 0.22) / (0.14 * rim_wide), 2.0)) * (0.35 + 0.65 * up);
-	float inner = exp(-pow((x - 0.5) / (0.12 * rim_wide), 2.0)); // soft inner reflection
-	color = mix(color, vec3(1.0), 0.40 * gloss * highlight);
-	color += highlight * (1.15 * rimline * lit + 0.10 * inner * lit);
-	// depth: the lower inside edge a little darker, as a thick pane casts on itself
-	float low = max(dot(n, vec2(0.0, 1.0)), 0.0);
-	color *= 1.0 - (0.06 + 0.04 * min(pane, 2.0)) * low * rim * rim;
-
-	// faint sheen across the top third, like light on the curved front
-	float top = clamp(1.0 - (p.y + half_size.y) / max(box_size.y * 0.35, 1.0), 0.0, 1.0);
-	if (!use_mask) {  // a shaped surface's box isn't the pane's: no sheen there
-		color += highlight * 0.07 * top * top;
-	}
-
-	// Polished glass (gloss on top of the lighting above, same `highlight`):
-	// a crisp white core right on the rim; light bounced up the underside of
-	// the bevel (the lamp sits above the pane); and, on a rounded-box pane
-	// (p is meaningful there, not on a shaped surface), an elliptical lamp
-	// reflection upper-left plus a thin polished streak along the light.
-	float core = exp(-depth * 4.0 / rim_wide);                // white edge on the rim
-	color += highlight * 0.40 * core * lit;
-	float bounce_up = exp(-pow((x - 0.18) / (0.12 * rim_wide), 2.0)) * low;
-	color = mix(color, vec3(1.0), 0.20 * bounce_up * highlight);
-	if (!use_mask) {
-		vec2 s = p / max(box_size, vec2(1.0));               // -0.5..0.5 across the pane
-		float spot = exp(-pow((s.x + 0.20) / 0.26, 2.0) - pow((s.y + 0.26) / 0.14, 2.0));
-		color = mix(color, vec3(1.0), 0.24 * spot * highlight);
-		vec2 rel = s - vec2(-0.20, -0.26);
-		float across = rel.x * light.y - rel.y * light.x;    // distance from the light line
-		float along = dot(rel, light);
-		float streak = exp(-pow(across / 0.055, 2.0)) * exp(-pow((along - 0.18) / 0.32, 2.0));
-		color += highlight * 0.09 * streak;
-	}
+	float lit = 0.45 + 0.55 * max(dot(n, light), 0.0);
+	// demo specularThickness ≈ 1.5 px on a 200 px capsule → scale with bevel
+	float spec_w = max(bevel * 0.04, 1.2);
+	float edge_ratio = clamp(depth / spec_w, 0.0, 1.0);
+	float sharp = sqrt(max(0.0, 1.0 - (1.0 - edge_ratio) * (1.0 - edge_ratio)));
+	// also light the tilted face a little (Fresnel), like glancing glass
+	float fresnel = pow(clamp(depth / max(bevel, 1.0), 0.0, 1.0), 2.0)
+		* pow(1.0 - abs(n.y) * 0.15, 2.0);
+	float spec = highlight * (0.70 * sharp * lit + 0.22 * fresnel * lit);
+	color = mix(color, vec3(1.0), clamp(spec, 0.0, 1.0));
+	// crisp white core right on the outline
+	color += highlight * 0.35 * exp(-depth * 3.5) * lit;
 
 	gl_FragColor = vec4(min(color, 1.0), 1.0) * coverage * alpha;
 }
