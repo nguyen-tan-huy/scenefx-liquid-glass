@@ -58,10 +58,27 @@ float rounded_box(vec2 p, vec2 half_size, float r) {
 	return length(max(q, 0.0)) + min(max(q.x, q.y), 0.0) - r;
 }
 
+// The backdrop can come filtered NEAREST (its texture's own setting wins on
+// some drivers): blend the four texels around `px` ourselves, so a shifted,
+// non-integer position reads smoothly instead of snapping (stair steps).
+vec3 texel_bilinear(vec2 px) {
+	vec2 q = px - 0.5;
+	vec2 f = fract(q);
+	vec2 b = (floor(q) + 0.5) / tex_size;
+	vec2 o = 1.0 / tex_size;
+	vec3 c00 = texture2D(tex, b).rgb;
+	vec3 c10 = texture2D(tex, b + vec2(o.x, 0.0)).rgb;
+	vec3 c01 = texture2D(tex, b + vec2(0.0, o.y)).rgb;
+	vec3 c11 = texture2D(tex, b + o).rgb;
+	return mix(mix(c00, c10, f.x), mix(c01, c11, f.x), f.y);
+}
+
 vec3 sample_rgb(vec2 px, vec2 shift) {
-	vec2 uv = px / tex_size;
-	vec2 s = shift / tex_size;
-	return vec3(texture2D(tex, uv - s).r, texture2D(tex, uv).g, texture2D(tex, uv + s).b);
+	// color split only where there is one (the rim); elsewhere one lookup
+	if (dot(shift, shift) < 0.0025) {
+		return texel_bilinear(px);
+	}
+	return vec3(texel_bilinear(px - shift).r, texel_bilinear(px).g, texel_bilinear(px + shift).b);
 }
 
 void main() {
@@ -69,6 +86,7 @@ void main() {
 	vec2 half_size = box_size * 0.5;
 	vec2 p = px - (box_pos + half_size);
 	float d;       // signed distance to the pane's edge, < 0 inside
+	float pull = 1.0;  // how clearly one edge is nearest (0 midway between two)
 	vec2 n;        // outward normal, in the plane
 	float coverage;
 	float bevel;
@@ -84,12 +102,13 @@ void main() {
 		// normal: smooth (no stripes), and cheap - the flat middle of a pane
 		// costs 24 reads, a rim pixel at most ~64.
 		bevel = max(edge * 1.4, 24.0);
-		float k = 6.0 / bevel;
+		float k = 3.0 / bevel;   // soft: the normal turns smoothly round curves
 		float wsum = 0.0;
 		vec2 nsum = vec2(0.0);
 		bool any_edge = false;
-		for (int i = 0; i < 8; i++) {
-			float ang = float(i) * 0.785398;
+		float dists[12];
+		for (int i = 0; i < 12; i++) {
+			float ang = float(i) * 0.523599;
 			vec2 dir = vec2(cos(ang), sin(ang));
 			float s1 = 8.0, s2 = bevel * 0.5, s3 = bevel;
 			float lo = 0.0, hi = -1.0;
@@ -99,22 +118,36 @@ void main() {
 			float dist = bevel;
 			if (hi > 0.0) {
 				any_edge = true;
-				for (int j = 0; j < 5; j++) {
+				for (int j = 0; j < 7; j++) {   // ~0.1 px: no stair steps in the depth
 					float mid = 0.5 * (lo + hi);
 					if (mask_at(px + dir * mid) < 0.5) { hi = mid; } else { lo = mid; }
 				}
 				dist = 0.5 * (lo + hi);
 			}
+			dists[i] = dist;
 			float w = exp(-k * dist);
 			wsum += w;
 			nsum += dir * w;
 		}
+		// a thin pane (a pill) is thinner than two bevels: the bevel may be at
+		// most half its thickness here, so its middle line stays flat instead
+		// of tearing (top half pushed up, bottom half down)
+		float thick = 2.0 * bevel;
+		for (int i = 0; i < 6; i++) {
+			thick = min(thick, dists[i] + dists[i + 6]);
+		}
+		float soft_k = k;
+		bevel = max(min(bevel, thick * 0.5), 4.0);
 		if (!any_edge) {
 			n = vec2(0.0);   // the flat middle
 			d = -bevel;
 		} else {
-			n = nsum / max(length(nsum), 1e-5);
-			d = -clamp(-log(wsum / 8.0) / k, 0.0, bevel);   // soft minimum
+			// opposite edges (the middle of a thin pill) cancel out: bend less
+			// there instead of flipping direction from pixel to pixel
+			vec2 nv = nsum / max(wsum, 1e-5);
+			pull = smoothstep(0.02, 0.25, length(nv));
+			n = nv / max(length(nv), 1e-5);
+			d = -clamp(-log(wsum / 12.0) / soft_k, 0.0, bevel);  // soft minimum
 		}
 		coverage = a;
 	} else {
@@ -142,12 +175,20 @@ void main() {
 	float bent = tilt - asin(sin(tilt) / 1.5);
 	// macOS-like lens: the backdrop is pulled in hard right at the rim (a
 	// convex edge magnifies), the flat middle stays put
-	float shift = tan(bent) * refraction * (1.0 + 0.4 * u * u);
+	float shift = tan(bent) * refraction * (1.0 + 0.4 * u * u) * pull;
 
 	// What's behind is seen sharp, only bent by the bevel (no smear): the
 	// glass shows itself by how light passes through it, below.
 	float rim = 1.0 - x;
-	vec3 color = sample_rgb(px - n * shift, n * chroma * 0.3 * rim * rim);
+	// two taps a little apart along the bend: where the shift changes fast
+	// (near the rim) one sample per pixel shows stair steps
+	vec2 disp = n * chroma * 0.3 * rim * rim;
+	// The lens squeezes a wider strip of the backdrop into the rim: one sample
+	// per pixel would skip over it (stair steps on lines). Four taps spread
+	// along the squeeze, wider toward the rim, filter it.
+	float spread = (0.5 + refraction * 0.12 * rim * rim) * pull;
+	vec2 base = px - n * shift;
+	vec3 color = 0.5 * (sample_rgb(base - n * spread * 0.5, disp) + sample_rgb(base + n * spread * 0.5, disp));
 
 	// vibrancy: what's seen through the glass a touch brighter and more vivid
 	vec3 grey = vec3(dot(color, vec3(0.2126, 0.7152, 0.0722)));
@@ -187,7 +228,7 @@ void main() {
 	float depth = -d;                                         // px from the rim
 	vec2 light = normalize(vec2(-0.6, -0.8));
 	float lit = 0.55 + 0.45 * max(dot(n, light), 0.0);        // toward the light: brighter
-	float rimline = exp(-depth * 1.4);                        // ~1 px
+	float rimline = exp(-depth * 1.0);                        // ~1-2 px, soft
 	// glossy, not dark: a bright sheen along the inside of the rim, strongest
 	// where the rim faces up toward the light (top), like polished glass
 	float up = max(dot(n, vec2(0.0, -1.0)), 0.0);
