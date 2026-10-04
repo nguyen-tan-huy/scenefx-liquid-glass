@@ -2921,7 +2921,18 @@ static bool apply_blur_region(struct wlr_scene_node *node, struct blur_data *blu
 		struct render_data *render_data, struct wlr_output_state *output_state,
 		const pixman_region32_t *original_damage, pixman_region32_t *blur_padding_region) {
 	bool should_compensate_blur = false;
-	const int sample_size = blur_data_calc_size(blur_data);
+	int sample_size = blur_data_calc_size(blur_data);
+	// swayctl: liquid glass reads the backdrop up to ~2.5x refraction px
+	// outside the pane (the demo field's rim pull): redraw and re-read that
+	// far too, or the pane shows the previous frame around its rim. The +64
+	// inside blur_data_calc_size only ever covered ~40 px of bend.
+	if (node->type == WLR_SCENE_NODE_BLUR) {
+		struct wlr_scene_blur *b = wlr_scene_blur_from_node(node);
+		int reach = (int)ceilf(b->glass.refraction * 2.5f * render_data->scale) + 12;
+		if (reach > sample_size) {
+			sample_size = reach;
+		}
+	}
 
 	pixman_region32_t node_visible_region;
 	pixman_region32_init(&node_visible_region);

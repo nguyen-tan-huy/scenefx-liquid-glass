@@ -23,9 +23,11 @@ bool blur_data_should_parameters_blur_effects(struct blur_data *blur_data) {
 }
 
 int blur_data_calc_size(struct blur_data *blur_data) {
-	// swayctl: + room for liquid glass, which samples the backdrop up to ~40 px
-	// away (refraction): a partial redraw must repaint that far too, or
-	// the glass shows stale pixels (smear "sometimes there, sometimes not")
+	// swayctl: + room for liquid glass, which samples the backdrop outside the
+	// damaged part: a partial redraw must repaint that far too, or the glass
+	// shows stale pixels (smear "sometimes there, sometimes not"). Only the
+	// cheap floor lives here — the reach that scales with `glass.refraction`
+	// (~2.5x, IOR 2.45) is added per node in apply_blur_region().
 	return pow(2, blur_data->num_passes + 1) * blur_data->radius + 64;
 }
 

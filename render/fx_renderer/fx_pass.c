@@ -1216,14 +1216,15 @@ void fx_render_pass_add_blur(struct fx_gles_render_pass *pass,
 	bool glass_on = g->refraction > 0 || g->chroma > 0 || g->highlight > 0;
 	if (!buffer && glass_on && pass->fx_offscreen_buffers->effects_buffer) {
 		// swayctl: clear glass (no blur): refract an untouched copy of what's
-		// behind. The demo field pulls up to ~`refraction` px at the rim (plus
-		// a little dispersion); copy that margin so steep edges stay sharp.
+		// behind. With the demo IOR (2.45) the field pulls up to ~2.5x
+		// `refraction` px at the rim (plus dispersion and the anti-stair-step
+		// smear): copy that margin so the bend never reads stale pixels.
 		struct fx_framebuffer *copy = pass->fx_offscreen_buffers->effects_buffer;
 		pixman_region32_t region;
 		pixman_region32_init(&region);
 		pixman_region32_copy(&region, fx_options->tex_options.base.clip);
-		float reach = g->refraction + g->refraction * 0.20f * (g->chroma > 0.0f ? 1.0f : 0.0f)
-			+ 6.0f;
+		float reach = g->refraction * 2.5f + g->refraction * 0.20f * (g->chroma > 0.0f ? 1.0f : 0.0f)
+			+ 12.0f;
 		wlr_region_expand(&region, &region, (int)ceilf(reach));
 		pixman_region32_intersect_rect(&region, &region, 0, 0,
 			pass->buffer->buffer->width, pass->buffer->buffer->height);
