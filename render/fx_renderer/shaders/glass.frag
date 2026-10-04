@@ -5,6 +5,8 @@
 //  - light through it bends by Snell's law (glass ~1.5) using that surface's
 //    normal, so the backdrop is magnified and pulled inward hard near the rim
 //    and gently across the whole body (`thickness`: demo Glass Thickness);
+//    thickness also widens the rim band and its absorption/lighting, so a
+//    thick pane's edge reads as mass, not a hairline highlight;
 //  - red/green/blue bend a little differently (dispersion), strongest at the
 //    very edge;
 //  - thick glass absorbs: a Beer-Lambert band darkens the steep bevel (the
@@ -92,6 +94,12 @@ void main() {
 	vec2 px = v_texcoord * tex_size;
 	vec2 half_size = box_size * 0.5;
 	vec2 p = px - (box_pos + half_size);
+	// Optical depth in Tahoe units (200 px = the reference pane). Drives how
+	// wide and heavy the rim looks: a thick pane's edge is a broad band of
+	// curved glass, not a hairline highlight.
+	float pane = clamp(thickness / 200.0, 0.0, 7.5);
+	float rim_wide = 1.0 + 0.50 * min(pane, 3.5);   // 1.0 @0, 1.5 @200, 2.75 @1500
+	float rim_bend = 1.0 + 0.25 * min(pane, 3.0);   // stronger inward pull at the rim
 	float d;       // signed distance to the pane's edge, < 0 inside
 	float pull = 1.0;  // how clearly one edge is nearest (0 midway between two)
 	vec2 n;        // outward normal, in the plane
@@ -108,7 +116,7 @@ void main() {
 		// minimum of the 8 gives the depth, their weighted directions the
 		// normal: smooth (no stripes), and cheap - the flat middle of a pane
 		// costs 24 reads, a rim pixel at most ~64.
-		bevel = max(edge * 1.4, 24.0);
+		bevel = max(edge * 1.4, 24.0) * rim_wide;
 		float k = 3.0 / bevel;   // soft: the normal turns smoothly round curves
 		float wsum = 0.0;
 		vec2 nsum = vec2(0.0);
@@ -167,9 +175,10 @@ void main() {
 		         rounded_box(p + vec2(0.0, 1.0), half_size, r) - rounded_box(p - vec2(0.0, 1.0), half_size, r));
 		n = n / max(length(n), 1e-4);
 		coverage = clamp(0.5 - d, 0.0, 1.0);  // anti-aliased outline
-		// deeper on a big pane: up to 40% of the way to the middle
+		// deeper on a big pane: up to 40% of the way to the middle; thicker
+		// glass also widens the curved band at the rim
 		float half_min = min(half_size.x, half_size.y);
-		bevel = clamp(max(edge, half_min * 0.4), 1.0, max(half_min, 1.0));
+		bevel = clamp(max(edge * rim_wide, half_min * 0.4), 1.0, max(half_min, 1.0));
 	}
 
 	// position across the bevel: 0 at the rim, 1 where the flat top begins
@@ -181,8 +190,9 @@ void main() {
 	// Snell, air -> glass (n = 1.5): how far the ray leans inside the pane
 	float bent = tilt - asin(sin(tilt) / 1.5);
 	// Tahoe lens: the backdrop is pulled in hard right at the rim (a convex
-	// edge magnifies and bends what's behind into a visible caustic).
-	float shift = tan(bent) * refraction * (1.0 + 0.95 * u * u) * pull;
+	// edge magnifies and bends what's behind into a visible caustic). A thicker
+	// pane pulls harder: the edge reads as mass, not just a highlight.
+	float shift = tan(bent) * refraction * (1.0 + 0.95 * u * u) * pull * rim_bend;
 
 	// Whole-pane body (demo: Glass Thickness + Refraction Scale). Thick glass
 	// has optical depth across the entire surface, not only at the rim: what's
@@ -214,8 +224,8 @@ void main() {
 	vec2 disp = shift_dir * chroma * 0.45 * (rim * rim + 0.35 * body_h);
 	// The lens squeezes a wider strip of the backdrop into the bend: one sample
 	// per pixel would skip over it (stair steps on lines). Four taps spread
-	// along the squeeze, filter it.
-	float spread = (0.5 + refraction * 0.18 * rim * rim + body_shift * 0.20) * pull;
+	// along the squeeze, filter it. A thicker rim squeezes a wider strip.
+	float spread = (0.5 + refraction * 0.18 * rim_wide * rim * rim + body_shift * 0.20) * pull;
 	vec2 base = px - total_shift;
 	vec3 color = 0.5 * (sample_rgb(base - shift_dir * spread * 0.5, disp)
 		+ sample_rgb(base + shift_dir * spread * 0.5, disp));
@@ -226,8 +236,11 @@ void main() {
 
 	// Thick glass absorbs along the longest path (the steep bevel), and a
 	// little through the body: a green-grey Beer-Lambert band at the rim.
+	// The band widens and deepens with optical depth so the edge reads as mass.
 	float body_tint = clamp(thickness / 200.0, 0.0, 1.5) * body_h;
-	color *= mix(vec3(1.0), vec3(0.62, 0.70, 0.68), clamp(0.55 * rim * rim + 0.10 * body_tint, 0.0, 0.7));
+	float rim_abs = clamp(0.55 + 0.10 * min(pane, 2.5), 0.0, 0.72);
+	color *= mix(vec3(1.0), vec3(0.62, 0.70, 0.68),
+		clamp(rim_abs * rim * rim + 0.10 * body_tint, 0.0, 0.78));
 
 	// Keep the text readable (WCAG 4.5:1 against the text's own color): only
 	// where the backdrop is too close to it, and only as much as needed.
@@ -250,30 +263,32 @@ void main() {
 		}
 	}
 
-	// Fresnel: the tilted bevel reflects the sky — Tahoe's bright thin rim
+	// Fresnel: the tilted bevel reflects the sky — Tahoe's bright thin rim;
+	// a thicker bevel has more glancing surface, so a little stronger
 	float fresnel = pow(1.0 - cos(tilt), 3.0);
-	color = mix(color, vec3(1.0), 0.42 * fresnel * highlight);
+	color = mix(color, vec3(1.0), (0.42 + 0.10 * min(pane, 2.0)) * fresnel * highlight);
 
 	// Light through a thick, liquid-smooth pane (like clear glass or water
 	// under a lamp): a crisp bright line right on the rim, a darker band just
 	// inside it where the steep bevel reflects the dark surroundings instead
 	// of letting light through, and a second thin reflection further in.
 	// All follow the edge evenly; the light's direction only makes one side
-	// a little brighter, so no corner turns into a bright blob.
+	// a little brighter, so no corner turns into a bright blob. Bands widen
+	// with optical depth so a thick pane's rim is visibly heavy.
 	float depth = -d;                                         // px from the rim
 	vec2 light = normalize(vec2(-0.6, -0.8));
 	float lit = 0.55 + 0.45 * max(dot(n, light), 0.0);        // toward the light: brighter
-	float rimline = exp(-depth * 0.85);                       // thin, crisp
+	float rimline = exp(-depth * 0.85 / rim_wide);            // thin, crisp
 	// glossy, not dark: a bright sheen along the inside of the rim, strongest
 	// where the rim faces up toward the light (top), like polished glass
 	float up = max(dot(n, vec2(0.0, -1.0)), 0.0);
-	float gloss = exp(-pow((x - 0.22) / 0.14, 2.0)) * (0.35 + 0.65 * up);
-	float inner = exp(-pow((x - 0.5) / 0.12, 2.0));           // soft inner reflection
+	float gloss = exp(-pow((x - 0.22) / (0.14 * rim_wide), 2.0)) * (0.35 + 0.65 * up);
+	float inner = exp(-pow((x - 0.5) / (0.12 * rim_wide), 2.0)); // soft inner reflection
 	color = mix(color, vec3(1.0), 0.40 * gloss * highlight);
 	color += highlight * (1.15 * rimline * lit + 0.10 * inner * lit);
 	// depth: the lower inside edge a little darker, as a thick pane casts on itself
 	float low = max(dot(n, vec2(0.0, 1.0)), 0.0);
-	color *= 1.0 - 0.06 * low * rim * rim;
+	color *= 1.0 - (0.06 + 0.04 * min(pane, 2.0)) * low * rim * rim;
 
 	// faint sheen across the top third, like light on the curved front
 	float top = clamp(1.0 - (p.y + half_size.y) / max(box_size.y * 0.35, 1.0), 0.0, 1.0);
@@ -286,9 +301,9 @@ void main() {
 	// the bevel (the lamp sits above the pane); and, on a rounded-box pane
 	// (p is meaningful there, not on a shaped surface), an elliptical lamp
 	// reflection upper-left plus a thin polished streak along the light.
-	float core = exp(-depth * 4.0);                           // ~0.25 px white edge
+	float core = exp(-depth * 4.0 / rim_wide);                // white edge on the rim
 	color += highlight * 0.40 * core * lit;
-	float bounce_up = exp(-pow((x - 0.18) / 0.12, 2.0)) * low;
+	float bounce_up = exp(-pow((x - 0.18) / (0.12 * rim_wide), 2.0)) * low;
 	color = mix(color, vec3(1.0), 0.20 * bounce_up * highlight);
 	if (!use_mask) {
 		vec2 s = p / max(box_size, vec2(1.0));               // -0.5..0.5 across the pane
