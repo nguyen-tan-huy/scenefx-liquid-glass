@@ -2940,6 +2940,24 @@ static bool apply_blur_region(struct wlr_scene_node *node, struct blur_data *blu
 			0, 0, output->width, output->height);
 	}
 
+	// swayctl: a small pane of liquid glass (bar, popups) is redrawn whole
+	// when any of it is: glass reads the backdrop a little outside the
+	// damaged part, where the previous frame - with the pane's own content
+	// on it - would still be (ghost copies of the bar's text). Big panes
+	// (windows) keep partial redraws for speed.
+	if (!pixman_region32_empty(&intersection) && node->type == WLR_SCENE_NODE_BLUR) {
+		struct wlr_scene_blur *b = wlr_scene_blur_from_node(node);
+		struct wlr_output *output = render_data->output->output;
+		pixman_box32_t *e = pixman_region32_extents(&node_visible_region);
+		long area = (long)(e->x2 - e->x1) * (e->y2 - e->y1);
+		if ((b->glass.refraction > 0 || b->glass.highlight > 0)
+				&& area * 100 < (long)output->width * output->height * 15) {
+			pixman_region32_union(&intersection, &intersection, &node_visible_region);
+			pixman_region32_intersect_rect(&intersection, &intersection,
+				0, 0, output->width, output->height);
+		}
+	}
+
 	if (!pixman_region32_empty(&intersection)) {
 		should_compensate_blur = true;
 
