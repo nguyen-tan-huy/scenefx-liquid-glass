@@ -1217,12 +1217,14 @@ void fx_render_pass_add_blur(struct fx_gles_render_pass *pass,
 	if (!buffer && glass_on && pass->fx_offscreen_buffers->effects_buffer) {
 		// swayctl: clear glass (no blur): refract an untouched copy of what's
 		// behind. Copy a margin around the damage too: the rim samples up to
-		// `refraction` px away.
+		// `refraction` px away, the body dome up to ~thickness*0.07*refr_scale.
 		struct fx_framebuffer *copy = pass->fx_offscreen_buffers->effects_buffer;
 		pixman_region32_t region;
 		pixman_region32_init(&region);
 		pixman_region32_copy(&region, fx_options->tex_options.base.clip);
-		wlr_region_expand(&region, &region, (int)ceilf(g->refraction + g->chroma) + 2);
+		float body_reach = g->thickness * 0.07f * (g->refraction / 48.0f);
+		wlr_region_expand(&region, &region,
+			(int)ceilf(g->refraction + g->chroma + body_reach) + 2);
 		pixman_region32_intersect_rect(&region, &region, 0, 0,
 			pass->buffer->buffer->width, pass->buffer->buffer->height);
 		fx_render_pass_read_to_buffer(pass, &region, copy, pass->buffer);
