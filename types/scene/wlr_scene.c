@@ -2244,6 +2244,7 @@ static void scene_entry_render(struct render_list_entry *entry, const struct ren
 			.glass = {
 				.refraction = blur->glass.refraction * data->scale,
 				.edge = blur->glass.edge * data->scale,
+				.thickness = blur->glass.thickness * data->scale,
 				.chroma = blur->glass.chroma * data->scale,
 				.highlight = blur->glass.highlight,
 				.text = blur->glass.text,

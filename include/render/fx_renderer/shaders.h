@@ -188,6 +188,7 @@ struct glass_shader {
 	GLint box_size;
 	GLint radius;
 	GLint edge;
+	GLint thickness;
 	GLint refraction;
 	GLint chroma;
 	GLint highlight;

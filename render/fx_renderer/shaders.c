@@ -376,6 +376,7 @@ bool link_glass_program(struct glass_shader *shader) {
 	shader->box_size = glGetUniformLocation(prog, "box_size");
 	shader->radius = glGetUniformLocation(prog, "radius");
 	shader->edge = glGetUniformLocation(prog, "edge");
+	shader->thickness = glGetUniformLocation(prog, "thickness");
 	shader->refraction = glGetUniformLocation(prog, "refraction");
 	shader->chroma = glGetUniformLocation(prog, "chroma");
 	shader->highlight = glGetUniformLocation(prog, "highlight");

@@ -4,10 +4,11 @@
 //    of width `edge` at the rim (a quarter circle in profile);
 //  - light through it bends by Snell's law (glass ~1.5) using that surface's
 //    normal, so the backdrop is magnified and pulled inward hard near the rim
-//    and untouched in the middle; red/green/blue bend a little differently
-//    (dispersion), strongest at the very edge;
+//    and gently across the whole body (`thickness`: demo Glass Thickness);
+//  - red/green/blue bend a little differently (dispersion), strongest at the
+//    very edge;
 //  - thick glass absorbs: a Beer-Lambert band darkens the steep bevel (the
-//    path through the pane is longest there), the flat top stays clear;
+//    path through the pane is longest there) and tints the body a little;
 //  - no smear: light through the glass shows it instead (brighter, richer
 //    color carried through the rim, a caustic band, a diagonal sheen);
 //  - the rim catches a key light from the top left and a weaker one from the
@@ -30,7 +31,8 @@ uniform vec2 box_pos;      // pane, in the same px space
 uniform vec2 box_size;
 uniform float radius;      // corner radius, px
 uniform float edge;        // bevel width, px
-uniform float refraction;  // pane thickness: how far the bevel can shift the backdrop, px
+uniform float thickness;   // body optical depth, px (whole-pane refraction)
+uniform float refraction;  // overall bend strength, px (scales rim + body)
 uniform float chroma;      // dispersion at the rim, px
 uniform float highlight;   // rim light, 0..1
 // The text drawn on this pane: 0 unknown, 1 light, 2 dark. Where what's behind
@@ -179,30 +181,53 @@ void main() {
 	// Snell, air -> glass (n = 1.5): how far the ray leans inside the pane
 	float bent = tilt - asin(sin(tilt) / 1.5);
 	// Tahoe lens: the backdrop is pulled in hard right at the rim (a convex
-	// edge magnifies and bends what's behind into a visible caustic); the
-	// flat middle stays put. Stronger pull than a thin pane.
+	// edge magnifies and bends what's behind into a visible caustic).
 	float shift = tan(bent) * refraction * (1.0 + 0.95 * u * u) * pull;
 
-	// What's behind is seen sharp, only bent by the bevel (no smear): the
+	// Whole-pane body (demo: Glass Thickness + Refraction Scale). Thick glass
+	// has optical depth across the entire surface, not only at the rim: what's
+	// behind shifts everywhere, more toward the edges. Sampled from outside
+	// each pixel = a mild magnifying lens over the panel, not just a bevel.
+	vec2 from_c = p / max(half_size, vec2(1e-3));
+	float rc = clamp(length(from_c), 0.0, 1.4);
+	// smooth dome: 0 at centre, 1 at the box edge
+	float body_h = rc * rc * (3.0 - 2.0 * clamp(rc, 0.0, 1.0));
+	float body_dh = 6.0 * clamp(rc, 0.0, 1.0) * (1.0 - clamp(rc, 0.0, 1.0));
+	float body_tilt = atan(body_dh * 0.22);
+	float body_bent = body_tilt - asin(sin(body_tilt) / 1.5);
+	// thickness drives body depth; refraction scales body + rim together
+	float refr_scale = refraction / max(48.0, 1.0);
+	float body_shift = tan(body_bent) * (thickness * 0.07) * (0.12 + 0.88 * body_h) * refr_scale;
+	vec2 body_dir = rc > 1e-3 ? normalize(p) : vec2(0.0);  // outward = magnify
+	// near the rim the bevel owns the shift; deeper inside the body dome does
+	float rim_own = 1.0 - smoothstep(0.0, max(bevel * 1.6, 8.0), -d);
+	vec2 total_shift = n * shift * pull * rim_own
+		+ body_dir * body_shift * (1.0 - 0.85 * rim_own);
+	float shift_mag = length(total_shift);
+	vec2 shift_dir = shift_mag > 1e-4 ? total_shift / shift_mag : n;
+
+	// What's behind is seen sharp, only bent by the glass (no smear): the
 	// glass shows itself by how light passes through it, below.
 	float rim = 1.0 - x;
 	// two taps a little apart along the bend: where the shift changes fast
 	// (near the rim) one sample per pixel shows stair steps
-	vec2 disp = n * chroma * 0.45 * rim * rim;
-	// The lens squeezes a wider strip of the backdrop into the rim: one sample
+	vec2 disp = shift_dir * chroma * 0.45 * (rim * rim + 0.35 * body_h);
+	// The lens squeezes a wider strip of the backdrop into the bend: one sample
 	// per pixel would skip over it (stair steps on lines). Four taps spread
-	// along the squeeze, wider toward the rim, filter it.
-	float spread = (0.5 + refraction * 0.18 * rim * rim) * pull;
-	vec2 base = px - n * shift;
-	vec3 color = 0.5 * (sample_rgb(base - n * spread * 0.5, disp) + sample_rgb(base + n * spread * 0.5, disp));
+	// along the squeeze, filter it.
+	float spread = (0.5 + refraction * 0.18 * rim * rim + body_shift * 0.20) * pull;
+	vec2 base = px - total_shift;
+	vec3 color = 0.5 * (sample_rgb(base - shift_dir * spread * 0.5, disp)
+		+ sample_rgb(base + shift_dir * spread * 0.5, disp));
 
 	// vibrancy: what's seen through the glass a touch brighter and more vivid
 	vec3 grey = vec3(dot(color, vec3(0.2126, 0.7152, 0.0722)));
 	color = mix(grey, color, 1.14) * (1.0 + 0.05 * highlight);
 
-	// Thick glass absorbs along the longest path (the steep bevel): a
-	// green-grey Beer-Lambert band at the rim, clear through the flat top.
-	color *= mix(vec3(1.0), vec3(0.62, 0.70, 0.68), 0.55 * rim * rim);
+	// Thick glass absorbs along the longest path (the steep bevel), and a
+	// little through the body: a green-grey Beer-Lambert band at the rim.
+	float body_tint = clamp(thickness / 200.0, 0.0, 1.5) * body_h;
+	color *= mix(vec3(1.0), vec3(0.62, 0.70, 0.68), clamp(0.55 * rim * rim + 0.10 * body_tint, 0.0, 0.7));
 
 	// Keep the text readable (WCAG 4.5:1 against the text's own color): only
 	// where the backdrop is too close to it, and only as much as needed.

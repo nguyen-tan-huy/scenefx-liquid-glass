@@ -1141,6 +1141,7 @@ static void render_glass(struct fx_gles_render_pass *pass, struct fx_texture *te
 	glUniform2f(shader.box_size, pane->width, pane->height);
 	glUniform1f(shader.radius, radius);
 	glUniform1f(shader.edge, glass->edge > 0 ? glass->edge : 18.0f);
+	glUniform1f(shader.thickness, glass->thickness);
 	glUniform1f(shader.refraction, glass->refraction);
 	glUniform1f(shader.chroma, glass->chroma);
 	glUniform1f(shader.highlight, glass->highlight);
