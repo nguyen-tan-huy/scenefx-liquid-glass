@@ -10,7 +10,10 @@
 //    color carried through the rim, a caustic band, a diagonal sheen);
 //  - the rim catches a key light from the top left and a weaker one from the
 //    opposite side (light bouncing inside the glass), as two thin bright lines;
-//  - glancing angles reflect more (Fresnel): the bevel brightens slightly.
+//  - glancing angles reflect more (Fresnel): the bevel brightens slightly;
+//  - polished gloss on top of that lighting: a crisp white core on the rim,
+//    a lamp reflection on the face where it turns toward the light, and a thin
+//    polished streak along that direction (all follow `highlight`).
 #ifdef GL_FRAGMENT_PRECISION_HIGH
 precision highp float;
 #else
@@ -244,6 +247,26 @@ void main() {
 	float top = clamp(1.0 - (p.y + half_size.y) / max(box_size.y * 0.35, 1.0), 0.0, 1.0);
 	if (!use_mask) {  // a shaped surface's box isn't the pane's: no sheen there
 		color += highlight * 0.05 * top * top;
+	}
+
+	// Polished glass (gloss on top of the lighting above, same `highlight`):
+	// a crisp white core right on the rim; light bounced up the underside of
+	// the bevel (the lamp sits above the pane); and, on a rounded-box pane
+	// (p is meaningful there, not on a shaped surface), an elliptical lamp
+	// reflection upper-left plus a thin polished streak along the light.
+	float core = exp(-depth * 3.5);                           // ~0.3 px white edge
+	color += highlight * 0.28 * core * lit;
+	float bounce_up = exp(-pow((x - 0.18) / 0.12, 2.0)) * low;
+	color = mix(color, vec3(1.0), 0.14 * bounce_up * highlight);
+	if (!use_mask) {
+		vec2 s = p / max(box_size, vec2(1.0));               // -0.5..0.5 across the pane
+		float spot = exp(-pow((s.x + 0.20) / 0.26, 2.0) - pow((s.y + 0.26) / 0.14, 2.0));
+		color = mix(color, vec3(1.0), 0.20 * spot * highlight);
+		vec2 rel = s - vec2(-0.20, -0.26);
+		float across = rel.x * light.y - rel.y * light.x;    // distance from the light line
+		float along = dot(rel, light);
+		float streak = exp(-pow(across / 0.055, 2.0)) * exp(-pow((along - 0.18) / 0.32, 2.0));
+		color += highlight * 0.07 * streak;
 	}
 
 	gl_FragColor = vec4(min(color, 1.0), 1.0) * coverage * alpha;
