@@ -197,6 +197,60 @@ GLuint fx_renderer_get_buffer_fbo(struct wlr_renderer *wlr_renderer,
 	return fbo;
 }
 
+bool fx_renderer_read_buffer_pixels(struct wlr_renderer *wlr_renderer,
+		struct wlr_buffer *wlr_buffer, int x, int y, int width, int height,
+		uint8_t *rgb_out) {
+	if (!wlr_renderer || !wlr_renderer_is_fx(wlr_renderer) || !wlr_buffer || !rgb_out
+			|| width <= 0 || height <= 0 || x < 0 || y < 0
+			|| x + width > wlr_buffer->width || y + height > wlr_buffer->height) {
+		return false;
+	}
+	struct fx_renderer *renderer = fx_get_renderer(wlr_renderer);
+
+	struct wlr_egl_context prev_ctx = {0};
+	if (!wlr_egl_make_current(renderer->egl, &prev_ctx)) {
+		return false;
+	}
+
+	bool ok = false;
+	struct fx_framebuffer *fb = fx_framebuffer_get_or_create(renderer, wlr_buffer);
+	if (fb) {
+		// save the caller's FBO: we bind the buffer's and must not leak it
+		GLint prev_fbo = 0;
+		glGetIntegerv(GL_FRAMEBUFFER_BINDING, &prev_fbo);
+		fx_framebuffer_bind(fb);
+		while (glGetError() != GL_NO_ERROR) { }  // stale errors from earlier passes
+		GLint pack = 4;
+		glGetIntegerv(GL_PACK_ALIGNMENT, &pack);
+		glPixelStorei(GL_PACK_ALIGNMENT, 1);
+		size_t stride = (size_t)width * 4;
+		uint8_t *tmp = malloc(stride * (size_t)height);
+		if (tmp) {
+			glReadPixels(x, y, width, height, GL_RGBA, GL_UNSIGNED_BYTE, tmp);
+			if (glGetError() == GL_NO_ERROR) {
+				// scenefx FBOs already hold the image top-down (verified
+				// against grim: no row flip needed)
+				for (int row = 0; row < height; row++) {
+					const uint8_t *src = tmp + (size_t)row * stride;
+					uint8_t *dst = rgb_out + (size_t)row * (size_t)width * 3;
+					for (int col = 0; col < width; col++) {
+						dst[col * 3] = src[col * 4];
+						dst[col * 3 + 1] = src[col * 4 + 1];
+						dst[col * 3 + 2] = src[col * 4 + 2];
+					}
+				}
+				ok = true;
+			}
+		}
+		free(tmp);
+		glPixelStorei(GL_PACK_ALIGNMENT, pack);
+		glBindFramebuffer(GL_FRAMEBUFFER, prev_fbo);
+	}
+
+	wlr_egl_restore_context(&prev_ctx);
+	return ok;
+}
+
 
 static struct wlr_render_timer *fx_render_timer_create(struct wlr_renderer *wlr_renderer) {
 	struct fx_renderer *renderer = fx_get_renderer(wlr_renderer);

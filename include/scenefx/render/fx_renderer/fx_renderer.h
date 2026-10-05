@@ -3,6 +3,8 @@
 
 #include <GLES2/gl2.h>
 #include <GLES2/gl2ext.h>
+#include <stdbool.h>
+#include <stdint.h>
 #include <wlr/backend.h>
 #include <wlr/render/interface.h>
 #include <wlr/types/wlr_buffer.h>
@@ -16,6 +18,13 @@ struct fx_renderer *fx_get_renderer(struct wlr_renderer *wlr_renderer);
 
 bool fx_renderer_check_ext(struct wlr_renderer *renderer, const char *ext);
 GLuint fx_renderer_get_buffer_fbo(struct wlr_renderer *renderer, struct wlr_buffer *buffer);
+
+// Read back part of a buffer this renderer drew into (its FBO) as packed
+// top-down RGB. Coordinates are buffer pixels, origin top left; rgb_out must
+// hold width*height*3 bytes. For IPC-style "what is on screen" sampling.
+bool fx_renderer_read_buffer_pixels(struct wlr_renderer *renderer,
+	struct wlr_buffer *buffer, int x, int y, int width, int height,
+	uint8_t *rgb_out);
 
 //
 // fx_texture
