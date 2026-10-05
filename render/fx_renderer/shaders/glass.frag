@@ -215,29 +215,47 @@ void main() {
 	float ior_g = 2.45;
 	float ior_r = 2.40;
 	float ior_b = 2.50;
-	float denom = max(thickness * 1.05 + bevel * 0.35, 1.0);
-	float raw = demo_disp(x, bevel, thickness, ior_g);
-	float raw_r = demo_disp(x, bevel, thickness, ior_r);
-	float raw_b = demo_disp(x, bevel, thickness, ior_b);
-	float field = raw / denom;
-	float field_r = raw_r / denom;
-	float field_b = raw_b / denom;
-	float g_amt = field * refraction * pull;
-	float span = max(field_b - field_r, 1e-4);
-	float r_amt = g_amt - chroma * pull * (field - field_r) / span;
-	float b_amt = g_amt + chroma * pull * (field_b - field) / span;
-	vec2 base = px - n * g_amt;
-	vec2 base_r = px - n * r_amt;
-	vec2 base_b = px - n * b_amt;
-	// light smear along the bend so steep gradients don't stair-step: the pull
-	// is ~2x `refraction` px at the rim now, so a fixed share of it would blur
-	// the whole bezel — keep the smear at about the pull per pixel instead.
-	float spread = 0.35 + 0.06 * abs(g_amt);
-	vec3 col_g = 0.5 * (texel_bilinear(base - n * spread * 0.5)
-		+ texel_bilinear(base + n * spread * 0.5));
-	vec3 col_r = texel_bilinear(base_r);
-	vec3 col_b = texel_bilinear(base_b);
-	vec3 color = vec3(col_r.r, col_g.g, col_b.b);
+	vec3 color;
+	if (x >= 1.0) {
+		// Flat interior: demo_disp(1) is exactly 0, so every channel bends by 0
+		// wherever pull is finite — no Snell solve, and R = B = the unbent pixel.
+		// G keeps the rim's anti-stair-step smear (it collapses to the pixel
+		// itself where the normal is 0, i.e. inside a shaped pane).
+		vec3 f = texel_bilinear(px);
+		if (n.x == 0.0 && n.y == 0.0) {
+			color = f;
+		} else {
+			vec2 off = n * 0.175;  // spread = 0.35 px at zero bend, half of it
+			float g = 0.5 * (texel_bilinear(px - off).g + texel_bilinear(px + off).g);
+			color = vec3(f.r, g, f.b);
+		}
+	} else {
+		float denom = max(thickness * 1.05 + bevel * 0.35, 1.0);
+		float raw = demo_disp(x, bevel, thickness, ior_g);
+		float field = raw / denom;
+		float g_amt = field * refraction * pull;
+		// light smear along the bend so steep gradients don't stair-step: the pull
+		// is ~2x `refraction` px at the rim now, so a fixed share of it would blur
+		// the whole bezel — keep the smear at about the pull per pixel instead.
+		float spread = 0.35 + 0.06 * abs(g_amt);
+		vec2 base = px - n * g_amt;
+		vec3 col_g = 0.5 * (texel_bilinear(base - n * spread * 0.5)
+			+ texel_bilinear(base + n * spread * 0.5));
+		vec3 col_r, col_b;
+		if (chroma <= 0.0) {
+			// chroma * pull * ... is exactly 0: both side channels share the
+			// green bend, so one sample feeds R and B.
+			col_r = texel_bilinear(base);
+			col_b = col_r;
+		} else {
+			float field_r = demo_disp(x, bevel, thickness, ior_r) / denom;
+			float field_b = demo_disp(x, bevel, thickness, ior_b) / denom;
+			float span = max(field_b - field_r, 1e-4);
+			col_r = texel_bilinear(px - n * (g_amt - chroma * pull * (field - field_r) / span));
+			col_b = texel_bilinear(px - n * (g_amt + chroma * pull * (field_b - field) / span));
+		}
+		color = vec3(col_r.r, col_g.g, col_b.b);
+	}
 
 	// Keep the text readable (WCAG 4.5:1 against the text's own color): only
 	// where the backdrop is too close to it, and only as much as needed.
