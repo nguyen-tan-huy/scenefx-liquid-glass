@@ -1158,9 +1158,10 @@ void wlr_scene_blur_set_transparency_mask_source(struct wlr_scene_blur *blur,
 	}
 
 	linked_node_destroy(&blur->transparency_mask_source);
-	linked_node_destroy(&source->blur);
-
+	// a NULL source (glass/mask switched off) only drops the link above;
+	// dereferencing source->blur here used to segfault on disable
 	if (source != NULL) {
+		linked_node_destroy(&source->blur);
 		linked_node_init_link(&blur->transparency_mask_source, &source->blur);
 	}
 
