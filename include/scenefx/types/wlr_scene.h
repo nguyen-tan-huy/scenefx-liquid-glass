@@ -683,8 +683,9 @@ void wlr_scene_blur_set_glass(struct wlr_scene_blur *blur, struct fx_glass_optio
 void wlr_scene_blur_set_probe(struct wlr_scene_blur *blur, struct fx_backdrop_probe *probe);
 
 /**
- * swayctl: ask for the backdrop behind this blur on the next frame: sets the
- * probe's `want` and damages the node so that frame draws it.
+ * swayctl: ask for the backdrop behind this blur the next time it's drawn
+ * (sets the probe's `want`; no damage: anything changing underneath redraws
+ * the pane anyway).
  */
 void wlr_scene_blur_request_probe(struct wlr_scene_blur *blur);
 

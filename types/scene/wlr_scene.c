@@ -1204,8 +1204,11 @@ void wlr_scene_blur_request_probe(struct wlr_scene_blur *blur) {
 	if (!blur->probe) {
 		return;
 	}
+	// No damage of our own: a forced redraw of just the pane reads the
+	// previous frame (the pane's own content) around it - ghosts in the glass.
+	// Whatever changes underneath already redraws the pane (the glass bends
+	// it), and that frame fills the probe; no frame = nothing changed.
 	blur->probe->want = true;
-	scene_node_update(&blur->node, NULL);
 }
 
 void wlr_scene_blur_set_strength(struct wlr_scene_blur *blur, float strength) {
