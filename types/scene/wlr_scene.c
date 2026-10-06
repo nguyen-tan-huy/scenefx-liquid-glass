@@ -1209,6 +1209,12 @@ void wlr_scene_blur_request_probe(struct wlr_scene_blur *blur) {
 	// Whatever changes underneath already redraws the pane (the glass bends
 	// it), and that frame fills the probe; no frame = nothing changed.
 	blur->probe->want = true;
+	// never seen whole yet (just opened, resized): one redraw of the pane so
+	// it can be. Only then - a forced redraw on every request put ghosts of
+	// the pane's own content into the glass.
+	if (!blur->probe->complete) {
+		scene_node_update(&blur->node, NULL);
+	}
 }
 
 void wlr_scene_blur_set_strength(struct wlr_scene_blur *blur, float strength) {

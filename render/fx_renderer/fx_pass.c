@@ -1,6 +1,7 @@
 #include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
 #include <assert.h>
 #include <pixman.h>
 #include <time.h>
@@ -1115,29 +1116,89 @@ static struct fx_framebuffer *get_main_buffer_blur(struct fx_gles_render_pass *p
 }
 
 // swayctl: keep what is behind `pane` (the copy the glass is about to bend)
-// for a backdrop probe -- the pane's own content isn't drawn yet
+// for a backdrop probe -- the pane's own content isn't drawn yet. Only the
+// parts this frame redraws (`clip`) are fresh: those are copied into the
+// probe's image; it's ready once the whole pane has been seen.
 static void backdrop_probe_grab(struct fx_backdrop_probe *probe, struct fx_renderer *renderer,
-		struct fx_framebuffer *buffer, const struct wlr_box *pane) {
+		struct fx_framebuffer *buffer, const struct wlr_box *pane, const pixman_region32_t *clip) {
 	int bw = buffer->buffer->width, bh = buffer->buffer->height;
 	int x0 = pane->x < 0 ? 0 : pane->x, y0 = pane->y < 0 ? 0 : pane->y;
 	int x1 = pane->x + pane->width > bw ? bw : pane->x + pane->width;
 	int y1 = pane->y + pane->height > bh ? bh : pane->y + pane->height;
-	if (x1 - x0 < 1 || y1 - y0 < 1) {
+	int w = x1 - x0, h = y1 - y0;
+	if (w < 1 || h < 1) {
 		return;
 	}
-	size_t need = (size_t)(x1 - x0) * (size_t)(y1 - y0) * 3;
-	if (probe->cap < need) {
-		unsigned char *grown = realloc(probe->rgb, need);
-		if (!grown) {
-			return;
+	size_t need = (size_t)w * (size_t)h;
+	if (w != probe->width || h != probe->height || x0 != probe->x || y0 != probe->y) {
+		if (probe->cap < need * 3) {
+			unsigned char *grown = realloc(probe->rgb, need * 3);
+			if (!grown) {
+				return;
+			}
+			probe->rgb = grown;
+			probe->cap = need * 3;
 		}
-		probe->rgb = grown;
-		probe->cap = need;
+		if (probe->seen_cap < need) {
+			unsigned char *grown = realloc(probe->seen, need);
+			if (!grown) {
+				return;
+			}
+			probe->seen = grown;
+			probe->seen_cap = need;
+		}
+		memset(probe->seen, 0, need);
+		probe->filled = 0;
+		probe->width = w;
+		probe->height = h;
+		probe->x = x0;
+		probe->y = y0;
+		probe->complete = false;
+		probe->ready = false;
 	}
-	if (fx_renderer_read_buffer_pixels(&renderer->wlr_renderer, buffer->buffer,
-			x0, y0, x1 - x0, y1 - y0, probe->rgb)) {
-		probe->width = x1 - x0;
-		probe->height = y1 - y0;
+
+	pixman_region32_t fresh;
+	pixman_region32_init_rect(&fresh, x0, y0, w, h);
+	if (clip) {
+		pixman_region32_intersect(&fresh, &fresh, (pixman_region32_t *)clip);
+	}
+	size_t filled_before = probe->filled;
+	int nrects = 0;
+	const pixman_box32_t *rects = pixman_region32_rectangles(&fresh, &nrects);
+	for (int i = 0; i < nrects; i++) {
+		int rx = rects[i].x1, ry = rects[i].y1;
+		int rw = rects[i].x2 - rx, rh = rects[i].y2 - ry;
+		if (rw < 1 || rh < 1) {
+			continue;
+		}
+		unsigned char *tmp = malloc((size_t)rw * (size_t)rh * 3);
+		if (!tmp) {
+			continue;
+		}
+		if (fx_renderer_read_buffer_pixels(&renderer->wlr_renderer, buffer->buffer,
+				rx, ry, rw, rh, tmp)) {
+			for (int row = 0; row < rh; row++) {
+				size_t dst = ((size_t)(ry - y0 + row) * (size_t)w + (size_t)(rx - x0));
+				memcpy(probe->rgb + dst * 3, tmp + (size_t)row * (size_t)rw * 3, (size_t)rw * 3);
+				for (int col = 0; col < rw; col++) {
+					probe->filled += !probe->seen[dst + col];
+				}
+				memset(probe->seen + dst, 1, (size_t)rw);
+			}
+		}
+		free(tmp);
+	}
+	pixman_region32_fini(&fresh);
+
+	// Whole once a frame adds nothing new: what's still unseen is outside
+	// the pane's shape (a pill's rounded corners, a shaped window's clear
+	// margins), which no frame ever draws. Waiting for every pixel of the
+	// box kept a redraw forced on every request - ghosts, and never ready.
+	if (!probe->complete && nrects > 0 && probe->filled > 0
+			&& (probe->filled == filled_before || probe->filled == need)) {
+		probe->complete = true;
+	}
+	if (probe->complete && nrects > 0) {
 		probe->want = false;
 		probe->ready = true;
 	}
@@ -1266,7 +1327,7 @@ void fx_render_pass_add_blur(struct fx_gles_render_pass *pass,
 	}
 	if (fx_options->probe && fx_options->probe->want) {
 		backdrop_probe_grab(fx_options->probe, renderer, buffer,
-			&fx_options->tex_options.base.dst_box);
+			&fx_options->tex_options.base.dst_box, fx_options->tex_options.base.clip);
 	}
 	struct wlr_texture *wlr_texture =
 		fx_texture_from_buffer(&renderer->wlr_renderer, buffer->buffer);

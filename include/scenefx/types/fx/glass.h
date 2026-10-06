@@ -26,6 +26,14 @@ struct fx_backdrop_probe {
 	int width, height;   // buffer px of `rgb` (the pane's box, clipped)
 	unsigned char *rgb;  // width * height * 3, top-down
 	size_t cap;
+	// Only what a frame redraws is fresh in the copy the glass bends (a big
+	// pane - a window - is redrawn in parts): each frame updates those parts
+	// of `rgb`; `complete` once every pixel has been filled since a resize.
+	bool complete;
+	int x, y;            // buffer px of `rgb`'s top left (the pane's box)
+	unsigned char *seen; // width * height: 1 = filled since the resize
+	size_t seen_cap;
+	size_t filled;       // how many of `seen` are 1
 };
 
 #endif
