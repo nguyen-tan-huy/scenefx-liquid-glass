@@ -1196,6 +1196,18 @@ void wlr_scene_blur_set_glass(struct wlr_scene_blur *blur, struct fx_glass_optio
 	scene_node_update(&blur->node, NULL);
 }
 
+void wlr_scene_blur_set_probe(struct wlr_scene_blur *blur, struct fx_backdrop_probe *probe) {
+	blur->probe = probe;
+}
+
+void wlr_scene_blur_request_probe(struct wlr_scene_blur *blur) {
+	if (!blur->probe) {
+		return;
+	}
+	blur->probe->want = true;
+	scene_node_update(&blur->node, NULL);
+}
+
 void wlr_scene_blur_set_strength(struct wlr_scene_blur *blur, float strength) {
 	if (blur->strength == strength) {
 		return;
@@ -2250,6 +2262,7 @@ static void scene_entry_render(struct render_list_entry *entry, const struct ren
 				.highlight = blur->glass.highlight,
 				.text = blur->glass.text,
 			},
+			.probe = blur->probe,
 			.use_optimized_blur = blur->should_only_blur_bottom_layer,
 			.blur_data = &scene->blur_data,
 			.ignore_transparent = mask != NULL,

@@ -1114,6 +1114,35 @@ static struct fx_framebuffer *get_main_buffer_blur(struct fx_gles_render_pass *p
 	return fx_options->current_buffer;
 }
 
+// swayctl: keep what is behind `pane` (the copy the glass is about to bend)
+// for a backdrop probe -- the pane's own content isn't drawn yet
+static void backdrop_probe_grab(struct fx_backdrop_probe *probe, struct fx_renderer *renderer,
+		struct fx_framebuffer *buffer, const struct wlr_box *pane) {
+	int bw = buffer->buffer->width, bh = buffer->buffer->height;
+	int x0 = pane->x < 0 ? 0 : pane->x, y0 = pane->y < 0 ? 0 : pane->y;
+	int x1 = pane->x + pane->width > bw ? bw : pane->x + pane->width;
+	int y1 = pane->y + pane->height > bh ? bh : pane->y + pane->height;
+	if (x1 - x0 < 1 || y1 - y0 < 1) {
+		return;
+	}
+	size_t need = (size_t)(x1 - x0) * (size_t)(y1 - y0) * 3;
+	if (probe->cap < need) {
+		unsigned char *grown = realloc(probe->rgb, need);
+		if (!grown) {
+			return;
+		}
+		probe->rgb = grown;
+		probe->cap = need;
+	}
+	if (fx_renderer_read_buffer_pixels(&renderer->wlr_renderer, buffer->buffer,
+			x0, y0, x1 - x0, y1 - y0, probe->rgb)) {
+		probe->width = x1 - x0;
+		probe->height = y1 - y0;
+		probe->want = false;
+		probe->ready = true;
+	}
+}
+
 // swayctl: draw the blurred backdrop as liquid glass inside `pane`
 static void render_glass(struct fx_gles_render_pass *pass, struct fx_texture *texture,
 		struct fx_render_texture_options *tex_options, const struct wlr_box *pane,
@@ -1234,6 +1263,10 @@ void fx_render_pass_add_blur(struct fx_gles_render_pass *pass,
 	}
 	if (!buffer) {
 		goto finish;
+	}
+	if (fx_options->probe && fx_options->probe->want) {
+		backdrop_probe_grab(fx_options->probe, renderer, buffer,
+			&fx_options->tex_options.base.dst_box);
 	}
 	struct wlr_texture *wlr_texture =
 		fx_texture_from_buffer(&renderer->wlr_renderer, buffer->buffer);

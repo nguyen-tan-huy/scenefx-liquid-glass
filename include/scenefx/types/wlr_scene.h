@@ -180,6 +180,7 @@ struct wlr_scene_blur {
 	float strength;
 	float alpha;
 	struct fx_glass_options glass; // swayctl
+	struct fx_backdrop_probe *probe; // swayctl: owned by the compositor
 
 	bool should_only_blur_bottom_layer;
 
@@ -674,6 +675,18 @@ void wlr_scene_blur_set_strength(struct wlr_scene_blur *blur, float strength);
 
 /** swayctl: render the blur as liquid glass (all 0: plain blur) */
 void wlr_scene_blur_set_glass(struct wlr_scene_blur *blur, struct fx_glass_options glass);
+
+/**
+ * swayctl: attach a backdrop probe (NULL detaches). The caller owns it and
+ * must detach it before freeing.
+ */
+void wlr_scene_blur_set_probe(struct wlr_scene_blur *blur, struct fx_backdrop_probe *probe);
+
+/**
+ * swayctl: ask for the backdrop behind this blur on the next frame: sets the
+ * probe's `want` and damages the node so that frame draws it.
+ */
+void wlr_scene_blur_request_probe(struct wlr_scene_blur *blur);
 
 /**
  * Sets the region where to clip the blur.
