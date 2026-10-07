@@ -199,7 +199,6 @@ struct glass_shader {
 	GLint mask;
 	GLint field;       // swayctl: the pane's shape field (glass_field.frag)
 	GLint field_span;  // px of the pane one field texture covers (x, y)
-	GLint debug;       // fx_glass_debug
 };
 
 bool link_glass_program(struct glass_shader *shader);

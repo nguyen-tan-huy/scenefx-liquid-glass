@@ -1242,9 +1242,6 @@ static void backdrop_probe_grab(struct fx_backdrop_probe *probe, struct fx_rende
 	// around 64k px whatever the pane's size
 	long area = (long)w * h;
 	int sub = area <= 128L * 1024 ? 1 : area <= 512L * 1024 ? 2 : area <= 2048L * 1024 ? 4 : 8;
-	if (fx_glass_debug & 2) {
-		sub = 1;
-	}
 	int dw = w / sub, dh = h / sub;
 	if (dw < 1 || dh < 1) {
 		sub = 1;
@@ -1355,8 +1352,6 @@ static void backdrop_probe_grab(struct fx_backdrop_probe *probe, struct fx_rende
 // pixels carry it and the glass reads it back bilinearly.
 #define GLASS_FIELD_SCALE 4
 
-int fx_glass_debug = 0;
-
 // swayctl: the cache entry for a shaped pane's field: its own if it has
 // one, else the least recently drawn one (whose texels are then all stale)
 static struct glass_field_entry *glass_field_entry(struct fx_renderer *renderer, uint64_t id) {
@@ -1395,7 +1390,7 @@ static GLuint render_glass_field(struct fx_renderer *renderer, struct fx_glass_f
 	int fh = (pane->height + scale - 1) / scale + 2;
 	struct glass_field_entry *e = glass_field_entry(renderer, state ? state->id : 0);
 	e->used = ++renderer->glass_field_clock;
-	if (!state || (fx_glass_debug & 8)) {
+	if (!state) {
 		pixman_region32_clear(&e->valid);
 	}
 	if (fw > e->tex_w || fh > e->tex_h) {
@@ -1559,7 +1554,7 @@ static void render_glass(struct fx_gles_render_pass *pass, struct fx_texture *te
 	float glass_edge = glass->edge > 0 ? glass->edge : 18.0f;
 	float field_span[2] = { 1.0f, 1.0f };
 	GLuint field_tex = 0;
-	if (mask && !(fx_glass_debug & 1)) {
+	if (mask) {
 		float m[4] = { 0, 0, 1, 1 };
 		if (mask_box && mask_box->width > 0 && mask_box->height > 0
 				&& mask->wlr_texture.width > 0 && mask->wlr_texture.height > 0) {
@@ -1619,7 +1614,6 @@ static void render_glass(struct fx_gles_render_pass *pass, struct fx_texture *te
 		glActiveTexture(GL_TEXTURE0);
 	}
 	glUniform1i(shader.field, 2);
-	glUniform1i(shader.debug, fx_glass_debug);
 	glUniform2f(shader.field_span, field_span[0], field_span[1]);
 
 	set_proj_matrix(shader.proj, pass->projection_matrix, &dst_box);
@@ -1716,7 +1710,7 @@ void fx_render_pass_add_blur(struct fx_gles_render_pass *pass,
 	// the rest), so drawing the whole surface into a stencil first is a
 	// second full pass over the window for nothing
 	bool stencil = fx_options->ignore_transparent && fx_options->tex_options.base.texture
-		&& (!glass_mask || (fx_glass_debug & 4));
+		&& !glass_mask;
 
 	// Get a stencil of the window ignoring transparent regions
 	if (stencil) {

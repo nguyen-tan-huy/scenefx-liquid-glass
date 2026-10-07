@@ -42,7 +42,6 @@ uniform vec4 mask_src;     // the part of the mask texture that is shown (x, y, 
 // the pane's shape field (glass_field.frag): rg normal, b bezel position, a bezel
 uniform sampler2D shape_field;
 uniform vec2 field_span;   // px of the pane the whole field texture covers
-uniform int debug;         // fx_glass_debug (swaymsg glass_debug)
 
 // The shape is where the surface isn't fully transparent: a glass card's own
 // fill can be only a few percent opaque, so any alpha counts (smoothed over
@@ -137,17 +136,6 @@ float rounded_box(vec2 p, vec2 half_size, float r) {
 // before drawing), so one fetch is already bilinear: no hand-rolled 4-tap
 // blend (4x the texture reads on every sample of the pane).
 vec3 texel_bilinear(vec2 px) {
-	if (mod(float(debug), 32.0) >= 16.0) {
-		vec2 q = px - 0.5;
-		vec2 f = fract(q);
-		vec2 b = (floor(q) + 0.5) / tex_size;
-		vec2 o = 1.0 / tex_size;
-		vec3 c00 = texture2D(tex, b).rgb;
-		vec3 c10 = texture2D(tex, b + vec2(o.x, 0.0)).rgb;
-		vec3 c01 = texture2D(tex, b + vec2(0.0, o.y)).rgb;
-		vec3 c11 = texture2D(tex, b + o).rgb;
-		return mix(mix(c00, c10, f.x), mix(c01, c11, f.x), f.y);
-	}
 	return texture2D(tex, px / tex_size).rgb;
 }
 
@@ -211,7 +199,7 @@ void main() {
 		// or text halo, a hairline gap) reads it as a smear of rim pull.
 		// Everywhere else — most of a pane — the field's one fetch stands in
 		// for the 36+ reads of the search.
-		bool near = mod(float(debug), 2.0) >= 1.0;
+		bool near = false;
 		for (int i = 0; i < 8; i++) {
 			float ang = float(i) * 0.785398;
 			vec2 dir = vec2(cos(ang), sin(ang));
