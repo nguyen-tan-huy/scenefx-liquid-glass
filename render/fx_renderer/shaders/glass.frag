@@ -56,6 +56,68 @@ float mask_at(vec2 px) {
 	return clamp(texture2D(mask, mask_src.xy + uv * mask_src.zw).a / 0.003, 0.0, 1.0);
 }
 
+// Distance to the shaped pane's outline along 12 directions: step out, then
+// bisect on the mask's anti-aliased outline for a sub-pixel distance. The
+// bend is measured from the *nearest* outline point (the demo's map is built
+// from the distance to the outline too). The same search glass_field.frag
+// caches at 1/4 resolution; run here only right next to the outline.
+void search_outline(vec2 px, out vec2 n, out float d, out float pull, out float bevel) {
+	bevel = max(edge, 16.0);
+	pull = 1.0;
+	float k = 3.0 / bevel;
+	float wsum = 0.0;
+	vec2 nsum = vec2(0.0);
+	bool any_edge = false;
+	float dists[12];
+	bool reached[12];
+	for (int i = 0; i < 12; i++) {
+		float ang = float(i) * 0.523599;
+		vec2 dir = vec2(cos(ang), sin(ang));
+		float s1 = 8.0, s2 = bevel * 0.5, s3 = bevel;
+		float lo = 0.0, hi = -1.0;
+		if (mask_at(px + dir * s1) < 0.5) { hi = s1; }
+		else if (mask_at(px + dir * s2) < 0.5) { lo = s1; hi = s2; }
+		else if (mask_at(px + dir * s3) < 0.5) { lo = s2; hi = s3; }
+		float dist = bevel;
+		reached[i] = hi > 0.0;
+		if (reached[i]) {
+			any_edge = true;
+			for (int j = 0; j < 7; j++) {
+				float mid = 0.5 * (lo + hi);
+				if (mask_at(px + dir * mid) < 0.5) { hi = mid; } else { lo = mid; }
+			}
+			dist = 0.5 * (lo + hi);
+		}
+		dists[i] = dist;
+		float w = exp(-k * dist);
+		wsum += w;
+		nsum += dir * w;
+	}
+	float dmin = bevel;
+	for (int i = 0; i < 12; i++) {
+		dmin = min(dmin, dists[i]);
+	}
+	// a thin pane (a pill) is thinner than two bevels: cap the bezel so the
+	// middle line stays flat; only a pair that reached both outlines says
+	// how thick the pane is
+	float thick = 1e4;
+	for (int i = 0; i < 6; i++) {
+		if (reached[i] && reached[i + 6]) {
+			thick = min(thick, dists[i] + dists[i + 6]);
+		}
+	}
+	bevel = max(min(bevel, thick * 0.5), 4.0);
+	if (!any_edge) {
+		n = vec2(0.0);
+		d = -bevel;
+	} else {
+		vec2 nv = nsum / max(wsum, 1e-5);
+		pull = smoothstep(0.02, 0.25, length(nv));
+		n = nv / max(length(nv), 1e-5);
+		d = -min(dmin, bevel);
+	}
+}
+
 float rounded_box(vec2 p, vec2 half_size, float r) {
 	vec2 q = abs(p) - half_size + r;
 	return length(max(q, 0.0)) + min(max(q.x, q.y), 0.0) - r;
@@ -120,21 +182,44 @@ void main() {
 		if (a <= 0.0) {
 			discard;
 		}
-		// distance, normal and bezel come from the pane's shape field
-		// (glass_field.frag, worked out once at a fraction of the resolution)
-		vec4 f = texture2D(shape_field, (px - box_pos) / field_span);
-		vec2 nv = f.rg * 2.0 - 1.0;
-		float bmax = max(edge, 16.0);
-		bevel = bmax > 4.0 ? mix(4.0, bmax, f.a) : bmax;
-		float len = length(nv);
-		if (len < 0.01) {
-			// no outline within reach: flat top (8-bit 0.5 is not exactly 0)
-			n = vec2(0.0);
-			d = -bevel;
+		// Near the outline (anything within ~6 px) the pane is searched here,
+		// per pixel: the cached field (glass_field.frag) is 1/4 resolution,
+		// and a sliver thinner than a couple of its texels (a faint shadow
+		// or text halo, a hairline gap) reads it as a smear of rim pull.
+		// Everywhere else — most of a pane — the field's one fetch stands in
+		// for the 36+ reads of the search.
+		bool near = false;
+		for (int i = 0; i < 8; i++) {
+			float ang = float(i) * 0.785398;
+			vec2 dir = vec2(cos(ang), sin(ang));
+			if (mask_at(px + dir * 3.0) < 0.5 || mask_at(px + dir * 6.0) < 0.5) {
+				near = true;
+				break;
+			}
+		}
+		if (near) {
+			search_outline(px, n, d, pull, bevel);
 		} else {
-			pull = smoothstep(0.02, 0.25, len);
-			n = nv / len;
-			d = -f.b * bevel;
+			vec4 f = texture2D(shape_field, (px - box_pos) / field_span);
+			vec2 nv = f.rg * 2.0 - 1.0;
+			float bmax = max(edge, 16.0);
+			bevel = bmax > 4.0 ? mix(4.0, bmax, f.a) : bmax;
+			float len = length(nv);
+			if (len < 0.01) {
+				// no outline within reach: flat top (8-bit 0.5 is not exactly 0)
+				n = vec2(0.0);
+				d = -bevel;
+			} else {
+				pull = smoothstep(0.02, 0.25, len);
+				n = nv / len;
+				d = -f.b * bevel;
+			}
+			// The probes above found no outline within 6 px, so a field that
+			// says otherwise is stale (a redraw the client's damage didn't
+			// cover): work this pixel out directly instead of bending by it.
+			if (-d < 7.0) {
+				search_outline(px, n, d, pull, bevel);
+			}
 		}
 		// `a` is the pane's alpha over the ~1/255 floor: 1 wherever the pane
 		// is drawn (its 6 % tint saturates it), fading across the anti-aliased
