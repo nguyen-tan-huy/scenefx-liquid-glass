@@ -21,6 +21,8 @@
 #include "blur2_frag_src.h"
 #include "blur_effects_frag_src.h"
 #include "glass_frag_src.h"
+#include "glass_field_frag_src.h"
+#include "probe_down_frag_src.h"
 
 GLuint compile_shader(GLuint type, const GLchar *src) {
 	GLuint shader = glCreateShader(type);
@@ -385,5 +387,42 @@ bool link_glass_program(struct glass_shader *shader) {
 	shader->mask_src = glGetUniformLocation(prog, "mask_src");
 	shader->text_mode = glGetUniformLocation(prog, "text_mode");
 	shader->mask = glGetUniformLocation(prog, "mask");
+	shader->field = glGetUniformLocation(prog, "shape_field");
+	shader->field_span = glGetUniformLocation(prog, "field_span");
+	return true;
+}
+
+bool link_glass_field_program(struct glass_field_shader *shader) {
+	GLuint prog;
+	shader->program = prog = link_program(glass_field_frag_src);
+	if (!shader->program) {
+		return false;
+	}
+	shader->proj = glGetUniformLocation(prog, "proj");
+	shader->tex_proj = glGetUniformLocation(prog, "tex_proj");
+	shader->pos_attrib = glGetAttribLocation(prog, "pos");
+	shader->box_pos = glGetUniformLocation(prog, "box_pos");
+	shader->box_size = glGetUniformLocation(prog, "box_size");
+	shader->edge = glGetUniformLocation(prog, "edge");
+	shader->mask_src = glGetUniformLocation(prog, "mask_src");
+	shader->mask = glGetUniformLocation(prog, "mask");
+	shader->field_span = glGetUniformLocation(prog, "field_span");
+	return true;
+}
+
+bool link_probe_down_program(struct probe_down_shader *shader) {
+	GLuint prog;
+	shader->program = prog = link_program(probe_down_frag_src);
+	if (!shader->program) {
+		return false;
+	}
+	shader->proj = glGetUniformLocation(prog, "proj");
+	shader->tex_proj = glGetUniformLocation(prog, "tex_proj");
+	shader->pos_attrib = glGetAttribLocation(prog, "pos");
+	shader->tex = glGetUniformLocation(prog, "tex");
+	shader->tex_size = glGetUniformLocation(prog, "tex_size");
+	shader->origin = glGetUniformLocation(prog, "origin");
+	shader->out_span = glGetUniformLocation(prog, "out_span");
+	shader->sub = glGetUniformLocation(prog, "sub");
 	return true;
 }

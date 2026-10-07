@@ -189,6 +189,7 @@ void wlr_scene_node_destroy(struct wlr_scene_node *node) {
 	} else if (node->type == WLR_SCENE_NODE_BLUR) {
 		struct wlr_scene_blur *blur = wlr_scene_blur_from_node(node);
 		linked_node_destroy(&blur->transparency_mask_source);
+		pixman_region32_fini(&blur->field.dirty);
 	}
 
 	assert(wl_list_empty(&node->events.destroy.listener_list));
@@ -1105,6 +1106,10 @@ struct wlr_scene_blur *wlr_scene_blur_create(struct wlr_scene_tree *parent,
 	blur->corners = corner_radii_all(0);
 	blur->should_only_blur_bottom_layer = false;
 	blur->transparency_mask_source = linked_node_init();
+	static uint64_t next_field_id = 1;
+	blur->field.id = next_field_id++;
+	pixman_region32_init(&blur->field.dirty);
+	blur->field.all_dirty = true;
 	blur->width = width;
 	blur->height = height;
 
@@ -1164,6 +1169,7 @@ void wlr_scene_blur_set_transparency_mask_source(struct wlr_scene_blur *blur,
 		linked_node_destroy(&source->blur);
 		linked_node_init_link(&blur->transparency_mask_source, &source->blur);
 	}
+	blur->field.all_dirty = true;
 
 	scene_node_update(&blur->node, NULL);
 }
@@ -1455,6 +1461,18 @@ void wlr_scene_buffer_set_buffer_with_options(struct wlr_scene_buffer *scene_buf
 	scene_buffer_set_texture(scene_buffer, NULL);
 	scene_buffer_set_wait_timeline(scene_buffer,
 		options->wait_timeline, options->wait_point);
+
+	// swayctl: this buffer shapes a pane of glass: what the client redrew
+	// is where the cached shape field (fx/glass.h) has to be redone
+	struct linked_node *field_link = linked_nodes_get_sibling(&scene_buffer->blur);
+	if (field_link != NULL) {
+		struct wlr_scene_blur *shaped = wl_container_of(field_link, shaped, transparency_mask_source);
+		if (update || buffer == NULL || options->damage == NULL) {
+			shaped->field.all_dirty = true;
+		} else {
+			pixman_region32_union(&shaped->field.dirty, &shaped->field.dirty, options->damage);
+		}
+	}
 
 	if (update) {
 		scene_node_update(&scene_buffer->node, NULL);
@@ -2280,6 +2298,7 @@ static void scene_entry_render(struct render_list_entry *entry, const struct ren
 				.text = blur->glass.text,
 			},
 			.probe = blur->probe,
+			.field = mask != NULL ? &blur->field : NULL,
 			.use_optimized_blur = blur->should_only_blur_bottom_layer,
 			.blur_data = &scene->blur_data,
 			.ignore_transparent = mask != NULL,

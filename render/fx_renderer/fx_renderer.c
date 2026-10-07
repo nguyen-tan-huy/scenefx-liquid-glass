@@ -99,6 +99,24 @@ static inline void free_shaders(struct fx_renderer *renderer) {
 	glDeleteProgram(renderer->shaders.blur2.program);
 	glDeleteProgram(renderer->shaders.blur_effects.program);
 	glDeleteProgram(renderer->shaders.glass.program);
+	glDeleteProgram(renderer->shaders.glass_field.program);
+	glDeleteProgram(renderer->shaders.probe_down.program);
+	if (renderer->probe_down.tex) {
+		glDeleteFramebuffers(1, &renderer->probe_down.fbo);
+		glDeleteTextures(1, &renderer->probe_down.tex);
+		renderer->probe_down.tex = 0;
+		renderer->probe_down.fbo = 0;
+	}
+	for (size_t i = 0; i < sizeof(renderer->glass_fields) / sizeof(renderer->glass_fields[0]); i++) {
+		struct glass_field_entry *e = &renderer->glass_fields[i];
+		if (e->tex) {
+			glDeleteFramebuffers(1, &e->fbo);
+			glDeleteTextures(1, &e->tex);
+			pixman_region32_fini(&e->valid);
+			e->tex = 0;
+			e->fbo = 0;
+		}
+	}
 	pop_fx_debug(renderer);
 }
 
@@ -493,6 +511,14 @@ static bool link_shaders(struct fx_renderer *renderer) {
 	}
 	if (!link_glass_program(&renderer->shaders.glass)) {
 		wlr_log(WLR_ERROR, "Could not link glass shader");
+		goto error;
+	}
+	if (!link_glass_field_program(&renderer->shaders.glass_field)) {
+		wlr_log(WLR_ERROR, "Could not link glass field shader");
+		goto error;
+	}
+	if (!link_probe_down_program(&renderer->shaders.probe_down)) {
+		wlr_log(WLR_ERROR, "Could not link probe downscale shader");
 		goto error;
 	}
 

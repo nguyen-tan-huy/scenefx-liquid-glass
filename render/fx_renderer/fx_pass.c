@@ -1119,6 +1119,115 @@ static struct fx_framebuffer *get_main_buffer_blur(struct fx_gles_render_pass *p
 // for a backdrop probe -- the pane's own content isn't drawn yet. Only the
 // parts this frame redraws (`clip`) are fresh: those are copied into the
 // probe's image; it's ready once the whole pane has been seen.
+// swayctl: shrink [x, y, w x h] of `buffer` by `sub` (block means) and read
+// the down rects `rects` (in shrunk px, relative to x/y) into `rgb`
+// (`dw` px wide). The readback is then 1/sub² the size: a full-size one of a
+// window stalled the render loop for 6-16 ms - a dropped frame per probe.
+static bool probe_read_down(struct fx_renderer *renderer, struct fx_framebuffer *buffer,
+		int x, int y, int sub, int dw, int dh, const pixman_region32_t *rects_down,
+		unsigned char *rgb, unsigned char *seen, size_t *filled) {
+	if (dw > renderer->probe_down.width || dh > renderer->probe_down.height) {
+		int w = dw > renderer->probe_down.width ? dw : renderer->probe_down.width;
+		int h = dh > renderer->probe_down.height ? dh : renderer->probe_down.height;
+		if (!renderer->probe_down.tex) {
+			glGenTextures(1, &renderer->probe_down.tex);
+			glGenFramebuffers(1, &renderer->probe_down.fbo);
+		}
+		glBindTexture(GL_TEXTURE_2D, renderer->probe_down.tex);
+		glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, w, h, 0, GL_RGBA, GL_UNSIGNED_BYTE, NULL);
+		glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+		glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+		glBindTexture(GL_TEXTURE_2D, 0);
+		renderer->probe_down.width = w;
+		renderer->probe_down.height = h;
+	}
+	const int tw = renderer->probe_down.width, th = renderer->probe_down.height;
+	struct wlr_texture *src_tex = fx_texture_from_buffer(&renderer->wlr_renderer, buffer->buffer);
+	if (!src_tex) {
+		return false;
+	}
+	struct fx_texture *src = fx_get_texture(src_tex);
+
+	GLint prev_fbo = 0;
+	GLint prev_viewport[4];
+	glGetIntegerv(GL_FRAMEBUFFER_BINDING, &prev_fbo);
+	glGetIntegerv(GL_VIEWPORT, prev_viewport);
+	GLboolean stencil = glIsEnabled(GL_STENCIL_TEST);
+	GLboolean blend = glIsEnabled(GL_BLEND);
+	glDisable(GL_STENCIL_TEST);
+	glDisable(GL_BLEND);
+
+	glBindFramebuffer(GL_FRAMEBUFFER, renderer->probe_down.fbo);
+	glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D,
+		renderer->probe_down.tex, 0);
+	bool ok = glCheckFramebufferStatus(GL_FRAMEBUFFER) == GL_FRAMEBUFFER_COMPLETE;
+	if (ok) {
+		struct probe_down_shader shader = renderer->shaders.probe_down;
+		glViewport(0, 0, tw, th);
+		glUseProgram(shader.program);
+		glActiveTexture(GL_TEXTURE0);
+		glBindTexture(src->target, src->tex);
+		glTexParameteri(src->target, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+		glTexParameteri(src->target, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+		glUniform1i(shader.tex, 0);
+		glUniform2f(shader.tex_size, src->wlr_texture.width, src->wlr_texture.height);
+		glUniform2f(shader.origin, x, y);
+		glUniform2f(shader.out_span, tw, th);
+		glUniform1f(shader.sub, sub);
+		float proj[9];
+		matrix_projection(proj, tw, th, WL_OUTPUT_TRANSFORM_FLIPPED_180);
+		struct wlr_box box = { .x = 0, .y = 0, .width = tw, .height = th };
+		struct wlr_fbox fsrc = { .x = 0, .y = 0, .width = 1, .height = 1 };
+		set_proj_matrix(shader.proj, proj, &box);
+		set_tex_matrix(shader.tex_proj, WL_OUTPUT_TRANSFORM_NORMAL, &fsrc);
+		render(&box, rects_down, shader.pos_attrib);
+		glBindTexture(src->target, 0);
+
+		GLint pack = 4;
+		glGetIntegerv(GL_PACK_ALIGNMENT, &pack);
+		glPixelStorei(GL_PACK_ALIGNMENT, 1);
+		int nrects = 0;
+		const pixman_box32_t *r = pixman_region32_rectangles(
+			(pixman_region32_t *)rects_down, &nrects);
+		for (int i = 0; i < nrects; i++) {
+			int rw = r[i].x2 - r[i].x1, rh = r[i].y2 - r[i].y1;
+			unsigned char *tmp = malloc((size_t)rw * (size_t)rh * 4);
+			if (!tmp) {
+				continue;
+			}
+			while (glGetError() != GL_NO_ERROR) { }
+			// scenefx targets hold the image top-down (see fx_renderer_read_buffer_pixels)
+			glReadPixels(r[i].x1, r[i].y1, rw, rh, GL_RGBA, GL_UNSIGNED_BYTE, tmp);
+			if (glGetError() == GL_NO_ERROR) {
+				for (int row = 0; row < rh; row++) {
+					size_t dst = (size_t)(r[i].y1 + row) * (size_t)dw + (size_t)r[i].x1;
+					const unsigned char *sp = tmp + (size_t)row * (size_t)rw * 4;
+					for (int col = 0; col < rw; col++) {
+						rgb[(dst + col) * 3] = sp[col * 4];
+						rgb[(dst + col) * 3 + 1] = sp[col * 4 + 1];
+						rgb[(dst + col) * 3 + 2] = sp[col * 4 + 2];
+						*filled += !seen[dst + col];
+						seen[dst + col] = 1;
+					}
+				}
+			}
+			free(tmp);
+		}
+		glPixelStorei(GL_PACK_ALIGNMENT, pack);
+	}
+
+	glBindFramebuffer(GL_FRAMEBUFFER, prev_fbo);
+	glViewport(prev_viewport[0], prev_viewport[1], prev_viewport[2], prev_viewport[3]);
+	if (stencil) {
+		glEnable(GL_STENCIL_TEST);
+	}
+	if (blend) {
+		glEnable(GL_BLEND);
+	}
+	wlr_texture_destroy(src_tex);
+	return ok;
+}
+
 static void backdrop_probe_grab(struct fx_backdrop_probe *probe, struct fx_renderer *renderer,
 		struct fx_framebuffer *buffer, const struct wlr_box *pane, const pixman_region32_t *clip) {
 	int bw = buffer->buffer->width, bh = buffer->buffer->height;
@@ -1129,8 +1238,19 @@ static void backdrop_probe_grab(struct fx_backdrop_probe *probe, struct fx_rende
 	if (w < 1 || h < 1) {
 		return;
 	}
-	size_t need = (size_t)w * (size_t)h;
-	if (w != probe->width || h != probe->height || x0 != probe->x || y0 != probe->y) {
+	// big panes (windows) are shrunk on the GPU first: what's read back stays
+	// around 64k px whatever the pane's size
+	long area = (long)w * h;
+	int sub = area <= 128L * 1024 ? 1 : area <= 512L * 1024 ? 2 : area <= 2048L * 1024 ? 4 : 8;
+	int dw = w / sub, dh = h / sub;
+	if (dw < 1 || dh < 1) {
+		sub = 1;
+		dw = w;
+		dh = h;
+	}
+	size_t need = (size_t)dw * (size_t)dh;
+	if (dw != probe->width || dh != probe->height || x0 != probe->x || y0 != probe->y
+			|| sub != (probe->sub ? probe->sub : 1)) {
 		if (probe->cap < need * 3) {
 			unsigned char *grown = realloc(probe->rgb, need * 3);
 			if (!grown) {
@@ -1149,8 +1269,9 @@ static void backdrop_probe_grab(struct fx_backdrop_probe *probe, struct fx_rende
 		}
 		memset(probe->seen, 0, need);
 		probe->filled = 0;
-		probe->width = w;
-		probe->height = h;
+		probe->width = dw;
+		probe->height = dh;
+		probe->sub = sub;
 		probe->x = x0;
 		probe->y = y0;
 		probe->complete = false;
@@ -1165,6 +1286,27 @@ static void backdrop_probe_grab(struct fx_backdrop_probe *probe, struct fx_rende
 	size_t filled_before = probe->filled;
 	int nrects = 0;
 	const pixman_box32_t *rects = pixman_region32_rectangles(&fresh, &nrects);
+	if (sub > 1) {
+		// only shrunk px whose whole block is fresh: the rest of the copy is
+		// whatever an earlier frame (or another pane) left there
+		pixman_region32_t down;
+		pixman_region32_init(&down);
+		for (int i = 0; i < nrects; i++) {
+			int dx1 = (rects[i].x1 - x0 + sub - 1) / sub, dy1 = (rects[i].y1 - y0 + sub - 1) / sub;
+			int dx2 = (rects[i].x2 - x0) / sub, dy2 = (rects[i].y2 - y0) / sub;
+			dx2 = dx2 > dw ? dw : dx2;
+			dy2 = dy2 > dh ? dh : dy2;
+			if (dx2 > dx1 && dy2 > dy1) {
+				pixman_region32_union_rect(&down, &down, dx1, dy1, dx2 - dx1, dy2 - dy1);
+			}
+		}
+		if (pixman_region32_not_empty(&down)) {
+			probe_read_down(renderer, buffer, x0, y0, sub, dw, dh, &down,
+				probe->rgb, probe->seen, &probe->filled);
+		}
+		pixman_region32_fini(&down);
+		nrects = 0;  // done
+	}
 	for (int i = 0; i < nrects; i++) {
 		int rx = rects[i].x1, ry = rects[i].y1;
 		int rw = rects[i].x2 - rx, rh = rects[i].y2 - ry;
@@ -1188,6 +1330,7 @@ static void backdrop_probe_grab(struct fx_backdrop_probe *probe, struct fx_rende
 		}
 		free(tmp);
 	}
+	nrects = pixman_region32_n_rects(&fresh);
 	pixman_region32_fini(&fresh);
 
 	// Whole once a frame adds nothing new: what's still unseen is outside
@@ -1204,10 +1347,201 @@ static void backdrop_probe_grab(struct fx_backdrop_probe *probe, struct fx_rende
 	}
 }
 
+// swayctl: a shaped pane's field texel covers this many px per side. The
+// field (distance to the outline, its normal) is smooth, so 1/16 of the
+// pixels carry it and the glass reads it back bilinearly.
+#define GLASS_FIELD_SCALE 4
+
+// swayctl: the cache entry for a shaped pane's field: its own if it has
+// one, else the least recently drawn one (whose texels are then all stale)
+static struct glass_field_entry *glass_field_entry(struct fx_renderer *renderer, uint64_t id) {
+	const size_t n = sizeof(renderer->glass_fields) / sizeof(renderer->glass_fields[0]);
+	struct glass_field_entry *lru = &renderer->glass_fields[0];
+	for (size_t i = 0; i < n; i++) {
+		struct glass_field_entry *e = &renderer->glass_fields[i];
+		if (id != 0 && e->id == id && e->tex) {
+			return e;
+		}
+		if (e->used < lru->used) {
+			lru = e;
+		}
+	}
+	if (!lru->tex) {
+		pixman_region32_init(&lru->valid);
+	} else {
+		pixman_region32_clear(&lru->valid);
+	}
+	lru->id = id;
+	return lru;
+}
+
+// swayctl: the shape field of a shaped glass pane (glass_field.frag) for
+// the part of it that `clip` redraws. Fields are kept per pane between
+// frames: only texels the client redrew near (`state->dirty`, as far as the
+// bezel reaches) or that were never worked out are recomputed — a new
+// backdrop, the window moving or another pane's damage reuse it as is.
+// Returns the texture to sample, or 0 (no field: the glass falls back to a
+// box) if the target can't be made.
+static GLuint render_glass_field(struct fx_renderer *renderer, struct fx_glass_field_state *state,
+		const struct wlr_box *pane, const pixman_region32_t *clip, float edge,
+		struct fx_texture *mask, const float mask_src[4], float field_span[2]) {
+	const int scale = GLASS_FIELD_SCALE;
+	int fw = (pane->width + scale - 1) / scale + 2;
+	int fh = (pane->height + scale - 1) / scale + 2;
+	struct glass_field_entry *e = glass_field_entry(renderer, state ? state->id : 0);
+	e->used = ++renderer->glass_field_clock;
+	if (!state) {
+		pixman_region32_clear(&e->valid);
+	}
+	if (fw > e->tex_w || fh > e->tex_h) {
+		// grow with some slack so a window being resized doesn't realloc every frame
+		int w = fw > e->tex_w ? fw + fw / 4 : e->tex_w;
+		int h = fh > e->tex_h ? fh + fh / 4 : e->tex_h;
+		if (!e->tex) {
+			glGenTextures(1, &e->tex);
+			glGenFramebuffers(1, &e->fbo);
+		}
+		glBindTexture(GL_TEXTURE_2D, e->tex);
+		glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, w, h, 0, GL_RGBA, GL_UNSIGNED_BYTE, NULL);
+		glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+		glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+		glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+		glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+		glBindTexture(GL_TEXTURE_2D, 0);
+		e->tex_w = w;
+		e->tex_h = h;
+		pixman_region32_clear(&e->valid);
+	}
+	if (e->pane_w != pane->width || e->pane_h != pane->height || e->edge != edge
+			|| memcmp(e->mask_src, mask_src, sizeof(e->mask_src)) != 0) {
+		e->pane_w = pane->width;
+		e->pane_h = pane->height;
+		e->edge = edge;
+		memcpy(e->mask_src, mask_src, sizeof(e->mask_src));
+		pixman_region32_clear(&e->valid);
+	}
+	const int tw = e->tex_w;
+	const int th = e->tex_h;
+	field_span[0] = (float)tw * scale;
+	field_span[1] = (float)th * scale;
+
+	// what the client redrew, from its buffer px to field texels, grown by
+	// the bezel: a texel's value depends on the mask that far around it
+	if (state) {
+		if (state->all_dirty) {
+			pixman_region32_clear(&e->valid);
+		} else if (pixman_region32_not_empty(&state->dirty)) {
+			float tex_w = mask->wlr_texture.width, tex_h = mask->wlr_texture.height;
+			float sx = pane->width / (mask_src[2] * tex_w) / scale;
+			float sy = pane->height / (mask_src[3] * tex_h) / scale;
+			int reach = (int)ceilf(fmaxf(edge, 16.0f) / scale) + 2;
+			int nrects;
+			const pixman_box32_t *r = pixman_region32_rectangles(&state->dirty, &nrects);
+			pixman_region32_t stale;
+			pixman_region32_init(&stale);
+			for (int i = 0; i < nrects; i++) {
+				int x1 = (int)floorf((r[i].x1 - mask_src[0] * tex_w) * sx) - reach;
+				int y1 = (int)floorf((r[i].y1 - mask_src[1] * tex_h) * sy) - reach;
+				int x2 = (int)ceilf((r[i].x2 - mask_src[0] * tex_w) * sx) + reach;
+				int y2 = (int)ceilf((r[i].y2 - mask_src[1] * tex_h) * sy) + reach;
+				pixman_region32_union_rect(&stale, &stale, x1, y1, x2 - x1, y2 - y1);
+			}
+			pixman_region32_subtract(&e->valid, &e->valid, &stale);
+			pixman_region32_fini(&stale);
+		}
+		pixman_region32_clear(&state->dirty);
+		state->all_dirty = false;
+	}
+
+	// the field texels under what is redrawn (+1 texel so bilinear reads at
+	// the clip's edge have both neighbours), less those still up to date
+	pixman_region32_t todo;
+	pixman_region32_init_rect(&todo, pane->x, pane->y, pane->width, pane->height);
+	if (clip) {
+		pixman_region32_intersect(&todo, &todo, clip);
+	}
+	if (!pixman_region32_not_empty(&todo)) {
+		pixman_region32_fini(&todo);
+		return e->tex;
+	}
+	pixman_box32_t *ext = pixman_region32_extents(&todo);
+	int x1 = (int)floorf((float)(ext->x1 - pane->x) / scale) - 1;
+	int y1 = (int)floorf((float)(ext->y1 - pane->y) / scale) - 1;
+	int x2 = (int)ceilf((float)(ext->x2 - pane->x) / scale) + 1;
+	int y2 = (int)ceilf((float)(ext->y2 - pane->y) / scale) + 1;
+	x1 = x1 < 0 ? 0 : x1;
+	y1 = y1 < 0 ? 0 : y1;
+	x2 = x2 > fw ? fw : x2;
+	y2 = y2 > fh ? fh : y2;
+	if (x2 <= x1 || y2 <= y1) {
+		pixman_region32_fini(&todo);
+		return e->tex;
+	}
+	pixman_region32_fini(&todo);
+	pixman_region32_init_rect(&todo, x1, y1, x2 - x1, y2 - y1);
+	pixman_region32_subtract(&todo, &todo, &e->valid);
+	if (!pixman_region32_not_empty(&todo)) {
+		pixman_region32_fini(&todo);
+		return e->tex;
+	}
+
+	GLint prev_fbo = 0;
+	GLint prev_viewport[4];
+	glGetIntegerv(GL_FRAMEBUFFER_BINDING, &prev_fbo);
+	glGetIntegerv(GL_VIEWPORT, prev_viewport);
+	GLboolean stencil = glIsEnabled(GL_STENCIL_TEST);
+	GLboolean blend = glIsEnabled(GL_BLEND);
+	glDisable(GL_STENCIL_TEST);
+	glDisable(GL_BLEND);
+
+	glBindFramebuffer(GL_FRAMEBUFFER, e->fbo);
+	glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, e->tex, 0);
+	bool ok = glCheckFramebufferStatus(GL_FRAMEBUFFER) == GL_FRAMEBUFFER_COMPLETE;
+	if (ok) {
+		struct glass_field_shader shader = renderer->shaders.glass_field;
+		glViewport(0, 0, tw, th);
+		glUseProgram(shader.program);
+		glActiveTexture(GL_TEXTURE0);
+		glBindTexture(mask->target, mask->tex);
+		glTexParameteri(mask->target, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+		glTexParameteri(mask->target, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+		glUniform1i(shader.mask, 0);
+		glUniform4f(shader.mask_src, mask_src[0], mask_src[1], mask_src[2], mask_src[3]);
+		glUniform2f(shader.box_pos, pane->x, pane->y);
+		glUniform2f(shader.box_size, pane->width, pane->height);
+		glUniform1f(shader.edge, edge);
+		glUniform2f(shader.field_span, field_span[0], field_span[1]);
+
+		float proj[9];
+		matrix_projection(proj, tw, th, WL_OUTPUT_TRANSFORM_FLIPPED_180);
+		struct wlr_box box = { .x = 0, .y = 0, .width = tw, .height = th };
+		struct wlr_fbox src = { .x = 0, .y = 0, .width = 1, .height = 1 };
+		set_proj_matrix(shader.proj, proj, &box);
+		set_tex_matrix(shader.tex_proj, WL_OUTPUT_TRANSFORM_NORMAL, &src);
+		render(&box, &todo, shader.pos_attrib);
+		glBindTexture(mask->target, 0);
+		pixman_region32_union(&e->valid, &e->valid, &todo);
+	} else {
+		wlr_log(WLR_ERROR, "glass field target incomplete; shaped glass falls back to a box");
+	}
+	pixman_region32_fini(&todo);
+
+	glBindFramebuffer(GL_FRAMEBUFFER, prev_fbo);
+	glViewport(prev_viewport[0], prev_viewport[1], prev_viewport[2], prev_viewport[3]);
+	if (stencil) {
+		glEnable(GL_STENCIL_TEST);
+	}
+	if (blend) {
+		glEnable(GL_BLEND);
+	}
+	return ok ? e->tex : 0;
+}
+
 // swayctl: draw the blurred backdrop as liquid glass inside `pane`
 static void render_glass(struct fx_gles_render_pass *pass, struct fx_texture *texture,
 		struct fx_render_texture_options *tex_options, const struct wlr_box *pane,
-		const struct fx_glass_options *glass, struct fx_texture *mask, const struct wlr_fbox *mask_box) {
+		const struct fx_glass_options *glass, struct fx_texture *mask, const struct wlr_fbox *mask_box,
+		struct fx_glass_field_state *field_state) {
 	struct wlr_render_texture_options *options = &tex_options->base;
 	struct fx_renderer *renderer = pass->buffer->renderer;
 	struct glass_shader shader = renderer->shaders.glass;
@@ -1217,6 +1551,25 @@ static void render_glass(struct fx_gles_render_pass *pass, struct fx_texture *te
 	struct wlr_fbox src_fbox = { .x = 0, .y = 0, .width = 1, .height = 1 };
 
 	push_fx_debug(renderer);
+	float glass_edge = glass->edge > 0 ? glass->edge : 18.0f;
+	float field_span[2] = { 1.0f, 1.0f };
+	GLuint field_tex = 0;
+	if (mask) {
+		float m[4] = { 0, 0, 1, 1 };
+		if (mask_box && mask_box->width > 0 && mask_box->height > 0
+				&& mask->wlr_texture.width > 0 && mask->wlr_texture.height > 0) {
+			m[0] = mask_box->x / mask->wlr_texture.width;
+			m[1] = mask_box->y / mask->wlr_texture.height;
+			m[2] = mask_box->width / mask->wlr_texture.width;
+			m[3] = mask_box->height / mask->wlr_texture.height;
+		}
+		field_tex = render_glass_field(renderer, field_state, pane, options->clip, glass_edge,
+			mask, m, field_span);
+		if (!field_tex) {
+			mask = NULL;
+		}
+
+	}
 	setup_blending(WLR_RENDER_BLEND_MODE_PREMULTIPLIED);
 	glUseProgram(shader.program);
 	glActiveTexture(GL_TEXTURE0);
@@ -1230,7 +1583,7 @@ static void render_glass(struct fx_gles_render_pass *pass, struct fx_texture *te
 	glUniform2f(shader.box_pos, pane->x, pane->y);
 	glUniform2f(shader.box_size, pane->width, pane->height);
 	glUniform1f(shader.radius, radius);
-	glUniform1f(shader.edge, glass->edge > 0 ? glass->edge : 18.0f);
+	glUniform1f(shader.edge, glass_edge);
 	glUniform1f(shader.thickness, glass->thickness);
 	glUniform1f(shader.refraction, glass->refraction);
 	glUniform1f(shader.chroma, glass->chroma);
@@ -1256,8 +1609,12 @@ static void render_glass(struct fx_gles_render_pass *pass, struct fx_texture *te
 		glBindTexture(mask->target, mask->tex);
 		glTexParameteri(mask->target, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
 		glTexParameteri(mask->target, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+		glActiveTexture(GL_TEXTURE2);
+		glBindTexture(GL_TEXTURE_2D, field_tex);
 		glActiveTexture(GL_TEXTURE0);
 	}
+	glUniform1i(shader.field, 2);
+	glUniform2f(shader.field_span, field_span[0], field_span[1]);
 
 	set_proj_matrix(shader.proj, pass->projection_matrix, &dst_box);
 	set_tex_matrix(shader.tex_proj, options->transform, &src_fbox);
@@ -1267,6 +1624,8 @@ static void render_glass(struct fx_gles_render_pass *pass, struct fx_texture *te
 	if (mask) {
 		glActiveTexture(GL_TEXTURE1);
 		glBindTexture(mask->target, 0);
+		glActiveTexture(GL_TEXTURE2);
+		glBindTexture(GL_TEXTURE_2D, 0);
 		glActiveTexture(GL_TEXTURE0);
 	}
 	pop_fx_debug(renderer);
@@ -1333,8 +1692,28 @@ void fx_render_pass_add_blur(struct fx_gles_render_pass *pass,
 		fx_texture_from_buffer(&renderer->wlr_renderer, buffer->buffer);
 	struct fx_texture *blur_texture = fx_get_texture(wlr_texture);
 
+	// swayctl: shaped glass: the surface's own texture is the shape. Only a
+	// plain 2D texture covering the pane can be sampled that way; otherwise
+	// the pane is treated as a rounded box like the others.
+	const struct fx_glass_options *glass = &fx_options->glass;
+	bool glass_draw = glass->refraction > 0 || glass->chroma > 0 || glass->highlight > 0 || glass->text;
+	struct fx_texture *glass_mask = NULL;
+	if (glass_draw && fx_options->ignore_transparent && fx_options->tex_options.base.texture
+			&& fx_options->tex_options.base.transform == WL_OUTPUT_TRANSFORM_NORMAL) {
+		struct fx_texture *t = fx_get_texture(fx_options->tex_options.base.texture);
+		if (t->target == GL_TEXTURE_2D) {
+			glass_mask = t;
+		}
+	}
+	// the stencil only keeps the glass off the surface's transparent parts;
+	// shaped glass already covers exactly the alpha it reads (and discards
+	// the rest), so drawing the whole surface into a stencil first is a
+	// second full pass over the window for nothing
+	bool stencil = fx_options->ignore_transparent && fx_options->tex_options.base.texture
+		&& !glass_mask;
+
 	// Get a stencil of the window ignoring transparent regions
-	if (fx_options->ignore_transparent && fx_options->tex_options.base.texture) {
+	if (stencil) {
 		stencil_mask_init();
 
 		struct fx_render_texture_options tex_options = fx_options->tex_options;
@@ -1367,20 +1746,9 @@ void fx_render_pass_add_blur(struct fx_gles_render_pass *pass,
 	// since we're capturing from the fbo, transform will always be normal
 	tex_options->base.transform = WL_OUTPUT_TRANSFORM_NORMAL;
 	tex_options->clipped_region = fx_options->clipped_region;
-	const struct fx_glass_options *glass = &fx_options->glass;
-	if (glass->refraction > 0 || glass->chroma > 0 || glass->highlight > 0 || glass->text) {
-		// shaped pane: the surface's own texture is the shape. Only a plain 2D
-		// texture covering the pane can be sampled that way; otherwise the
-		// pane is treated as a rounded box like the others.
-		struct fx_texture *mask = NULL;
-		if (fx_options->ignore_transparent && mask_src.texture
-				&& mask_src.transform == WL_OUTPUT_TRANSFORM_NORMAL) {
-			struct fx_texture *t = fx_get_texture(mask_src.texture);
-			if (t->target == GL_TEXTURE_2D) {
-				mask = t;
-			}
-		}
-		render_glass(pass, blur_texture, tex_options, &pane, glass, mask, &mask_src.src_box);
+	if (glass_draw) {
+		render_glass(pass, blur_texture, tex_options, &pane, glass, glass_mask, &mask_src.src_box,
+			fx_options->field);
 	} else {
 		fx_render_pass_add_texture(pass, tex_options);
 	}
@@ -1388,7 +1756,7 @@ void fx_render_pass_add_blur(struct fx_gles_render_pass *pass,
 	wlr_texture_destroy(&blur_texture->wlr_texture);
 
 	// Finish stenciling
-	if (fx_options->ignore_transparent && fx_options->tex_options.base.texture) {
+	if (stencil) {
 		stencil_mask_fini();
 	}
 

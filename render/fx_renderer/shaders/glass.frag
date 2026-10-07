@@ -39,6 +39,9 @@ uniform float alpha;
 uniform bool use_mask;
 uniform sampler2D mask;
 uniform vec4 mask_src;     // the part of the mask texture that is shown (x, y, w, h; 0..1)
+// the pane's shape field (glass_field.frag): rg normal, b bezel position, a bezel
+uniform sampler2D shape_field;
+uniform vec2 field_span;   // px of the pane the whole field texture covers
 
 // The shape is where the surface isn't fully transparent: a glass card's own
 // fill can be only a few percent opaque, so any alpha counts (smoothed over
@@ -58,19 +61,11 @@ float rounded_box(vec2 p, vec2 half_size, float r) {
 	return length(max(q, 0.0)) + min(max(q.x, q.y), 0.0) - r;
 }
 
-// The backdrop can come filtered NEAREST (its texture's own setting wins on
-// some drivers): blend the four texels around `px` ourselves, so a shifted,
-// non-integer position reads smoothly instead of snapping (stair steps).
+// The backdrop is bound GL_LINEAR (render_glass sets it on the texture right
+// before drawing), so one fetch is already bilinear: no hand-rolled 4-tap
+// blend (4x the texture reads on every sample of the pane).
 vec3 texel_bilinear(vec2 px) {
-	vec2 q = px - 0.5;
-	vec2 f = fract(q);
-	vec2 b = (floor(q) + 0.5) / tex_size;
-	vec2 o = 1.0 / tex_size;
-	vec3 c00 = texture2D(tex, b).rgb;
-	vec3 c10 = texture2D(tex, b + vec2(o.x, 0.0)).rgb;
-	vec3 c01 = texture2D(tex, b + vec2(0.0, o.y)).rgb;
-	vec3 c11 = texture2D(tex, b + o).rgb;
-	return mix(mix(c00, c10, f.x), mix(c01, c11, f.x), f.y);
+	return texture2D(tex, px / tex_size).rgb;
 }
 
 // Convex squircle (demo SurfaceEquations.convex_squircle). x: 0 rim, 1 flat.
@@ -125,66 +120,21 @@ void main() {
 		if (a <= 0.0) {
 			discard;
 		}
-		// Distance to the edge along 12 directions: step out, then bisect on
-		// the mask's anti-aliased outline for a sub-pixel distance. The bend
-		// is measured from the *nearest* outline point (the demo's map is
-		// built from the distance to the outline too).
-		bevel = max(edge, 16.0);
-		float k = 3.0 / bevel;
-		float wsum = 0.0;
-		vec2 nsum = vec2(0.0);
-		bool any_edge = false;
-		float dists[12];
-		bool reached[12];
-		for (int i = 0; i < 12; i++) {
-			float ang = float(i) * 0.523599;
-			vec2 dir = vec2(cos(ang), sin(ang));
-			float s1 = 8.0, s2 = bevel * 0.5, s3 = bevel;
-			float lo = 0.0, hi = -1.0;
-			if (mask_at(px + dir * s1) < 0.5) { hi = s1; }
-			else if (mask_at(px + dir * s2) < 0.5) { lo = s1; hi = s2; }
-			else if (mask_at(px + dir * s3) < 0.5) { lo = s2; hi = s3; }
-			float dist = bevel;
-			reached[i] = hi > 0.0;
-			if (reached[i]) {
-				any_edge = true;
-				for (int j = 0; j < 7; j++) {
-					float mid = 0.5 * (lo + hi);
-					if (mask_at(px + dir * mid) < 0.5) { hi = mid; } else { lo = mid; }
-				}
-				dist = 0.5 * (lo + hi);
-			}
-			dists[i] = dist;
-			float w = exp(-k * dist);
-			wsum += w;
-			nsum += dir * w;
-		}
-		// The directions that never reached an edge stay pinned at `bevel`;
-		// a log-average of all 12 would let them bury the near one — a pixel
-		// on the rim itself has to read x≈0, not bevel/2.
-		float dmin = bevel;
-		for (int i = 0; i < 12; i++) {
-			dmin = min(dmin, dists[i]);
-		}
-		// a thin pane (a pill) is thinner than two bevels: cap the bezel so the
-		// middle line stays flat instead of tearing. Only a pair that reached
-		// *both* outlines says how thick the pane is — the far side past the
-		// probes' reach means "thicker than bevel", not "exactly 2×bevel".
-		float thick = 1e4;
-		for (int i = 0; i < 6; i++) {
-			if (reached[i] && reached[i + 6]) {
-				thick = min(thick, dists[i] + dists[i + 6]);
-			}
-		}
-		bevel = max(min(bevel, thick * 0.5), 4.0);
-		if (!any_edge) {
+		// distance, normal and bezel come from the pane's shape field
+		// (glass_field.frag, worked out once at a fraction of the resolution)
+		vec4 f = texture2D(shape_field, (px - box_pos) / field_span);
+		vec2 nv = f.rg * 2.0 - 1.0;
+		float bmax = max(edge, 16.0);
+		bevel = bmax > 4.0 ? mix(4.0, bmax, f.a) : bmax;
+		float len = length(nv);
+		if (len < 0.01) {
+			// no outline within reach: flat top (8-bit 0.5 is not exactly 0)
 			n = vec2(0.0);
 			d = -bevel;
 		} else {
-			vec2 nv = nsum / max(wsum, 1e-5);
-			pull = smoothstep(0.02, 0.25, length(nv));
-			n = nv / max(length(nv), 1e-5);
-			d = -min(dmin, bevel);
+			pull = smoothstep(0.02, 0.25, len);
+			n = nv / len;
+			d = -f.b * bevel;
 		}
 		// `a` is the pane's alpha over the ~1/255 floor: 1 wherever the pane
 		// is drawn (its 6 % tint saturates it), fading across the anti-aliased

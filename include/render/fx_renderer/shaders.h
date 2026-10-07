@@ -197,8 +197,43 @@ struct glass_shader {
 	GLint text_mode;
 	GLint mask_src;  // x, y, w, h of the mask texture that is shown, 0..1
 	GLint mask;
+	GLint field;       // swayctl: the pane's shape field (glass_field.frag)
+	GLint field_span;  // px of the pane one field texture covers (x, y)
 };
 
 bool link_glass_program(struct glass_shader *shader);
+
+// swayctl: the shape field of a shaped glass pane (distance to its outline
+// and the outline's normal), worked out once at a fraction of the resolution
+// so the glass shader reads it in one fetch instead of searching the mask
+struct glass_field_shader {
+	GLuint program;
+	GLint proj;
+	GLint tex_proj;
+	GLint pos_attrib;
+	GLint box_pos;
+	GLint box_size;
+	GLint edge;
+	GLint mask_src;
+	GLint mask;
+	GLint field_span;
+};
+
+bool link_glass_field_program(struct glass_field_shader *shader);
+
+// swayctl: a backdrop probe's block-mean downscale (probe_down.frag)
+struct probe_down_shader {
+	GLuint program;
+	GLint proj;
+	GLint tex_proj;
+	GLint pos_attrib;
+	GLint tex;
+	GLint tex_size;
+	GLint origin;
+	GLint out_span;
+	GLint sub;
+};
+
+bool link_probe_down_program(struct probe_down_shader *shader);
 
 #endif

@@ -204,7 +204,28 @@ struct fx_renderer {
 		struct blur_shader blur2;
 		struct blur_effects_shader blur_effects;
 		struct glass_shader glass;
+		struct glass_field_shader glass_field;
+		struct probe_down_shader probe_down;
 	} shaders;
+
+	// swayctl: shaped glass panes' shape fields, kept between frames (see
+	// fx_glass_field_state); the least recently drawn one is reused
+	struct glass_field_entry {
+		uint64_t id;        // fx_glass_field_state.id; 0 = free
+		GLuint tex, fbo;    // RGBA8, tex_w x tex_h texels
+		int tex_w, tex_h;
+		int pane_w, pane_h; // what the texels were worked out for
+		float edge;
+		float mask_src[4];
+		pixman_region32_t valid; // texels that are up to date
+		uint64_t used;
+	} glass_fields[8];
+	uint64_t glass_field_clock;
+	// swayctl: target a backdrop probe is shrunk into before it's read back
+	struct {
+		GLuint tex, fbo;
+		int width, height;
+	} probe_down;
 
 	struct wl_list buffers; // fx_framebuffer.link
 	struct wl_list textures; // fx_texture.link

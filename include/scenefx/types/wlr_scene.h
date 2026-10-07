@@ -181,6 +181,7 @@ struct wlr_scene_blur {
 	float alpha;
 	struct fx_glass_options glass; // swayctl
 	struct fx_backdrop_probe *probe; // swayctl: owned by the compositor
+	struct fx_glass_field_state field; // swayctl: shaped glass, see fx/glass.h
 
 	bool should_only_blur_bottom_layer;
 

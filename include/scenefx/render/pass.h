@@ -86,6 +86,7 @@ struct fx_render_box_shadow_options {
 struct fx_render_blur_pass_options {
 	struct fx_glass_options glass;
 	struct fx_backdrop_probe *probe; // swayctl: grab the backdrop when it wants one
+	struct fx_glass_field_state *field; // swayctl: shaped glass's cached shape field
 	struct fx_render_texture_options tex_options;
 	struct fx_framebuffer *current_buffer;
 	struct blur_data *blur_data;

@@ -1,8 +1,10 @@
 #ifndef TYPES_FX_GLASS_H
 #define TYPES_FX_GLASS_H
 
+#include <pixman.h>
 #include <stdbool.h>
 #include <stddef.h>
+#include <stdint.h>
 
 /** swayctl: liquid glass over a blurred pane; off when all are 0 */
 struct fx_glass_options {
@@ -35,6 +37,19 @@ struct fx_backdrop_probe {
 	size_t seen_cap;
 	size_t filled;       // how many of `seen` are 1
 	int pending_asks;    // requests answered "not drawn yet" in a row
+	int sub;             // buffer px per `rgb` px on each side (big panes are shrunk); 0 = 1
+};
+
+/**
+ * swayctl: what a shaped pane's cached shape field (see glass_field.frag)
+ * must redo. The field is kept between frames, like Core Animation keeps a
+ * layer's shape: what changes behind the glass, or the window moving, never
+ * recomputes it — only the parts of the surface that the client redrew.
+ */
+struct fx_glass_field_state {
+	uint64_t id;             // never reused, so a freed node's field isn't taken for a new one's
+	pixman_region32_t dirty; // mask buffer px redrawn since the field last saw them
+	bool all_dirty;          // new buffer size and the like: redo it all
 };
 
 #endif
