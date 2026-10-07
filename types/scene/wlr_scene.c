@@ -1217,6 +1217,14 @@ void wlr_scene_blur_request_probe(struct wlr_scene_blur *blur) {
 	}
 }
 
+void wlr_scene_blur_refresh_probe(struct wlr_scene_blur *blur) {
+	if (!blur->probe) {
+		return;
+	}
+	blur->probe->want = true;
+	scene_node_update(&blur->node, NULL);
+}
+
 void wlr_scene_blur_set_strength(struct wlr_scene_blur *blur, float strength) {
 	if (blur->strength == strength) {
 		return;

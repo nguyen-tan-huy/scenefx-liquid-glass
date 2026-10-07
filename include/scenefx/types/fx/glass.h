@@ -34,6 +34,7 @@ struct fx_backdrop_probe {
 	unsigned char *seen; // width * height: 1 = filled since the resize
 	size_t seen_cap;
 	size_t filled;       // how many of `seen` are 1
+	int pending_asks;    // requests answered "not drawn yet" in a row
 };
 
 #endif

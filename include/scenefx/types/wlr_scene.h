@@ -690,6 +690,13 @@ void wlr_scene_blur_set_probe(struct wlr_scene_blur *blur, struct fx_backdrop_pr
 void wlr_scene_blur_request_probe(struct wlr_scene_blur *blur);
 
 /**
+ * swayctl: like wlr_scene_blur_request_probe, and redraw the node now. For a
+ * pane whose backdrop can change without anything redrawing the pane (a
+ * window: only its own damage redraws its glass); the caller rate-limits.
+ */
+void wlr_scene_blur_refresh_probe(struct wlr_scene_blur *blur);
+
+/**
  * Sets the region where to clip the blur.
  *
  * For there to be corner rounding of the clipped region, the corner radius and
