@@ -189,6 +189,7 @@ void main() {
 	vec2 n;        // outward normal, in the plane
 	float coverage;
 	float bevel;
+	float across = 1e4;  // the pane's thickness here, px (how far a bend may reach)
 	if (use_mask) {
 		float a = mask_at(px);
 		if (a <= 0.0) {
@@ -252,6 +253,12 @@ void main() {
 		// is drawn (its 6 % tint saturates it), fading across the anti-aliased
 		// outline — glass covers the shape and fades with it.
 		coverage = a;
+		// the bezel only comes out narrower than asked where the pane is
+		// thinner than two of them (search_outline / the field's cap): that
+		// is where its thickness is known, ~2 bezels
+		if (bevel < max(edge, 16.0) - 0.5) {
+			across = 2.0 * bevel;
+		}
 	} else {
 		float r = min(radius, min(half_size.x, half_size.y));
 		d = rounded_box(p, half_size, r);
@@ -264,6 +271,7 @@ void main() {
 		coverage = clamp(0.5 - d, 0.0, 1.0);
 		float half_min = min(half_size.x, half_size.y);
 		bevel = clamp(max(edge, half_min * 0.35), 1.0, max(half_min, 1.0));
+		across = 2.0 * half_min;
 	}
 
 	// position across the bezel: 0 at the rim, 1 where the flat top begins
@@ -296,6 +304,27 @@ void main() {
 		float raw = demo_disp(x, bevel, thickness, ior_g);
 		float field = raw / denom;
 		float g_amt = field * refraction * pull;
+		// A thin pane (a tab, a bar pill, a one-line header) bends no further
+		// than ~40 % of its own thickness: the demo's pull (up to ~2.5x
+		// `refraction`, 700 px at the top setting on a 2x screen) dragged
+		// whatever was far beyond such a pane across all of it - streaks.
+		// Big panes keep the full lens. `fit` scales the colour split too.
+		if (use_mask && abs(g_amt) > 4.0) {
+			// shaped pane: how thick it is here isn't known past two bezels,
+			// so walk inward along the normal (as far as the pull could
+			// matter: 2.5x it) until the pane ends
+			float walk = 2.5 * abs(g_amt);
+			for (int i = 1; i <= 8; i++) {
+				float t = walk * float(i) / 8.0;
+				if (mask_at(px - n * t) < 0.5) {
+					across = min(across, -d + t);
+					break;
+				}
+			}
+		}
+		float reach = max(0.4 * across, 4.0);
+		float fit = abs(g_amt) > reach ? reach / abs(g_amt) : 1.0;
+		g_amt *= fit;
 		// light smear along the bend so steep gradients don't stair-step: the pull
 		// is ~2x `refraction` px at the rim now, so a fixed share of it would blur
 		// the whole bezel — keep the smear at about the pull per pixel instead.
@@ -313,8 +342,8 @@ void main() {
 			float field_r = demo_disp(x, bevel, thickness, ior_r) / denom;
 			float field_b = demo_disp(x, bevel, thickness, ior_b) / denom;
 			float span = max(field_b - field_r, 1e-4);
-			col_r = texel_bilinear(px - n * (g_amt - chroma * pull * (field - field_r) / span));
-			col_b = texel_bilinear(px - n * (g_amt + chroma * pull * (field_b - field) / span));
+			col_r = texel_bilinear(px - n * (g_amt - fit * chroma * pull * (field - field_r) / span));
+			col_b = texel_bilinear(px - n * (g_amt + fit * chroma * pull * (field_b - field) / span));
 		}
 		color = vec3(col_r.r, col_g.g, col_b.b);
 	}
