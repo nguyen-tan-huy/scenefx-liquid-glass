@@ -212,7 +212,19 @@ void main() {
 		if (near) {
 			search_outline(px, n, d, pull, bevel);
 		} else {
-			vec4 f = texture2D(shape_field, (px - box_pos) / field_span);
+			// the four field texels around this pixel, blended by hand: one
+			// unreliable texel (x = 0, see glass_field.frag) means search
+			vec2 fsize = field_span / 4.0;  // texels in the field texture
+			vec2 q = (px - box_pos) / 4.0 - 0.5;
+			vec2 fr = fract(q);
+			vec2 t0 = (floor(q) + 0.5) / fsize;
+			vec2 to = 1.0 / fsize;
+			vec4 f00 = texture2D(shape_field, t0);
+			vec4 f10 = texture2D(shape_field, t0 + vec2(to.x, 0.0));
+			vec4 f01 = texture2D(shape_field, t0 + vec2(0.0, to.y));
+			vec4 f11 = texture2D(shape_field, t0 + to);
+			bool unsure = min(min(f00.b, f10.b), min(f01.b, f11.b)) < 0.5 / 255.0;
+			vec4 f = mix(mix(f00, f10, fr.x), mix(f01, f11, fr.x), fr.y);
 			vec2 nv = f.rg * 2.0 - 1.0;
 			float bmax = max(edge, 16.0);
 			bevel = bmax > 4.0 ? mix(4.0, bmax, f.a) : bmax;
@@ -225,6 +237,9 @@ void main() {
 				pull = smoothstep(0.02, 0.25, len);
 				n = nv / len;
 				d = -f.b * bevel;
+			}
+			if (unsure) {
+				d = 0.0;  // -> searched below
 			}
 			// The probes above found no outline within 6 px, so a field that
 			// says otherwise is stale (a redraw the client's damage didn't

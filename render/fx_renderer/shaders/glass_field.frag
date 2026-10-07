@@ -96,6 +96,20 @@ void main() {
 		}
 		x = inside ? clamp(min(dmin, bevel) / bevel, 0.0, 1.0) : 0.0;
 	}
+	// Only a texel whose whole 4x4 px cell is plainly inside, with no
+	// outline within 8 px, can stand in for its pixels; anything else
+	// (speckled faint halos, slivers, edges) is marked unreliable (x = 0)
+	// and glass.frag searches those pixels itself.
+	if (inside) {
+		bool mixed = any_edge && dmin < 8.0;
+		for (int i = 0; i < 4; i++) {
+			vec2 c = vec2(i == 0 || i == 2 ? -2.0 : 2.0, i < 2 ? -2.0 : 2.0);
+			mixed = mixed || mask_at(px + c) < 0.5 || mask_at(px + c * 0.5) < 0.5;
+		}
+		if (mixed) {
+			x = 0.0;
+		}
+	}
 	float b = bmax > 4.0 ? (bevel - 4.0) / (bmax - 4.0) : 0.0;
 	gl_FragColor = vec4(clamp(nv * 0.5 + 0.5, 0.0, 1.0), x, clamp(b, 0.0, 1.0));
 }
