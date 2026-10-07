@@ -1559,7 +1559,7 @@ static void render_glass(struct fx_gles_render_pass *pass, struct fx_texture *te
 	float glass_edge = glass->edge > 0 ? glass->edge : 18.0f;
 	float field_span[2] = { 1.0f, 1.0f };
 	GLuint field_tex = 0;
-	if (mask) {
+	if (mask && !(fx_glass_debug & 1)) {
 		float m[4] = { 0, 0, 1, 1 };
 		if (mask_box && mask_box->width > 0 && mask_box->height > 0
 				&& mask->wlr_texture.width > 0 && mask->wlr_texture.height > 0) {
