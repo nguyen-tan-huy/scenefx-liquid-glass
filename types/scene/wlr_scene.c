@@ -2941,6 +2941,20 @@ static bool should_blur_node_extend_damage(struct wlr_scene_node *node,
 	switch (node->type) {
 	case WLR_SCENE_NODE_BLUR:;
 		struct wlr_scene_blur *blur_node = wlr_scene_blur_from_node(node);
+		// swayctl: liquid glass reads what's behind it up to its bend's
+		// reach, blur or not. Clear glass (frost 0) runs with blur_passes 0,
+		// and this used to return "blur disabled" for it: no damage grown
+		// around it, no padding restored - partial redraws handed the glass
+		// the previous frame, the pane's own text and colours included, and
+		// it bent those into itself (smears on ChoSua's tabs, the bar's
+		// clock mirrored under it).
+		if (blur_node->glass.refraction > 0 || blur_node->glass.chroma > 0
+				|| blur_node->glass.highlight > 0) {
+			if (blur_node->strength < 1.0f) {
+				*blur_data = blur_data_apply_strength(blur_data, blur_node->strength);
+			}
+			return true;
+		}
 		// No artifact prevention needed when the whole blur is already
 		// rendered
 		if (blur_node->should_only_blur_bottom_layer && blur_node->strength == 1.0) {
