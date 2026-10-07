@@ -119,6 +119,15 @@ void search_outline(vec2 px, out vec2 n, out float d, out float pull, out float 
 	}
 }
 
+// the surface's own alpha at `px`, as drawn (not saturated like mask_at)
+float raw_alpha(vec2 px) {
+	vec2 uv = (px - box_pos) / box_size;
+	if (uv.x < 0.0 || uv.y < 0.0 || uv.x > 1.0 || uv.y > 1.0) {
+		return 0.0;
+	}
+	return texture2D(mask, mask_src.xy + uv * mask_src.zw).a;
+}
+
 float rounded_box(vec2 p, vec2 half_size, float r) {
 	vec2 q = abs(p) - half_size + r;
 	return length(max(q, 0.0)) + min(max(q.x, q.y), 0.0) - r;
@@ -190,6 +199,7 @@ void main() {
 	float coverage;
 	float bevel;
 	float across = 1e4;  // the pane's thickness here, px (how far a bend may reach)
+	float body = 1.0;    // how much of a pane's body this pixel is (bends scale with it)
 	if (use_mask) {
 		float a = mask_at(px);
 		if (a <= 0.0) {
@@ -253,6 +263,11 @@ void main() {
 		// is drawn (its 6 % tint saturates it), fading across the anti-aliased
 		// outline — glass covers the shape and fades with it.
 		coverage = a;
+		// A pane's body is a few % opaque at least (ChoSua's tint ~10/255);
+		// what's fainter - anti-aliased rims, text halos, a strip's wash -
+		// still gets glass but no bend: bending it by a pane's full pull
+		// dragged red wallpaper into ragged streaks outside the tabs.
+		body = smoothstep(2.0 / 255.0, 6.0 / 255.0, raw_alpha(px));
 		// the bezel only comes out narrower than asked where the pane is
 		// thinner than two of them (search_outline / the field's cap): that
 		// is where its thickness is known, ~2 bezels
@@ -324,6 +339,7 @@ void main() {
 		}
 		float reach = max(0.4 * across, 4.0);
 		float fit = abs(g_amt) > reach ? reach / abs(g_amt) : 1.0;
+		fit *= body;
 		g_amt *= fit;
 		// light smear along the bend so steep gradients don't stair-step: the pull
 		// is ~2x `refraction` px at the rim now, so a fixed share of it would blur
