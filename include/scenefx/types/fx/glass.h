@@ -52,4 +52,15 @@ struct fx_glass_field_state {
 	bool all_dirty;          // new buffer size and the like: redo it all
 };
 
+/**
+ * swayctl: DEBUG switches (swaymsg glass_debug <flags>) to turn the glass
+ * optimizations off one by one on a live session:
+ *   1 per-pixel outline search everywhere (no shape field)
+ *   2 full-size backdrop probe readback (no GPU shrink)
+ *   4 stencil pass for shaped glass again
+ *   8 shape field recomputed every draw (no cache between frames)
+ *  16 hand-rolled 4-tap bilinear backdrop reads
+ */
+extern int fx_glass_debug;
+
 #endif

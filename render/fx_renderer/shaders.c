@@ -389,6 +389,7 @@ bool link_glass_program(struct glass_shader *shader) {
 	shader->mask = glGetUniformLocation(prog, "mask");
 	shader->field = glGetUniformLocation(prog, "shape_field");
 	shader->field_span = glGetUniformLocation(prog, "field_span");
+	shader->debug = glGetUniformLocation(prog, "debug");
 	return true;
 }
 
