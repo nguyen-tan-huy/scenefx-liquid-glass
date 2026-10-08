@@ -379,7 +379,23 @@ void main() {
 	// `coeff` at alpha coeff² × `highlight`.
 	float band_x = 1.0 - depth;                 // 1 at the rim, -1 two px in
 	float band = depth <= 2.0 ? sqrt(max(1.0 - band_x * band_x, 0.0)) : 0.0;
-	float coeff = abs(dot(n, vec2(0.5, -0.866))) * band;
+	vec2 ln = n;
+	if (use_mask && band > 0.0) {
+		// On the line the light follows the outline itself: the slope of the
+		// pane's anti-aliased alpha, which turns smoothly round any curve. The
+		// searched normal (12 directions, blended) steps along a pill's ends
+		// and split its light into segments.
+		vec2 g = vec2(0.0);
+		for (int i = 1; i <= 2; i++) {
+			float r = float(i) * 1.5;
+			g += vec2(raw_alpha(px + vec2(r, 0.0)) - raw_alpha(px - vec2(r, 0.0)),
+			          raw_alpha(px + vec2(0.0, r)) - raw_alpha(px - vec2(0.0, r))) / r;
+		}
+		if (length(g) > 1e-4) {
+			ln = -normalize(g);  // alpha falls going out: outward normal
+		}
+	}
+	float coeff = abs(dot(ln, vec2(0.5, -0.866))) * band;
 	if (coeff > 0.0) {
 		vec3 grey = vec3(dot(color, vec3(0.2126, 0.7152, 0.0722)));
 		color = mix(color, mix(grey, color, 3.0), coeff * coeff);
