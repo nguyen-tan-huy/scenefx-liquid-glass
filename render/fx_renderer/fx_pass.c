@@ -521,12 +521,16 @@ void fx_render_pass_add_texture(struct fx_gles_render_pass *pass,
 	struct wlr_texture *ink_tex = NULL;
 	struct fx_glass_cache_entry *ink = fx_options->ink_cache;
 	struct fx_framebuffer *ink_fb = NULL;
+	float ink_reach = fx_options->ink_reach > 0 ? fx_options->ink_reach : 48.0f;
 	if (ink != NULL && ink->valid) {
 		ink_fb = ink->fb;
 	} else if (fx_options->ink && pass->ink_backdrop != NULL
 			&& wlr_box_equal(&pass->ink_box, &fx_options->base.dst_box)) {
-		// blurred glass: the blurred backdrop its pane was just drawn from
+		// blurred glass: the blurred backdrop its pane was just drawn from.
+		// It is only fresh around what this frame redraws (plus the blur's
+		// padding): read close around the pixel, never out to the full reach
 		ink_fb = pass->ink_backdrop;
+		ink_reach = fminf(ink_reach, 16.0f);
 	}
 	if (shader->ink >= 0 && fx_options->ink && ink_fb != NULL && ink_fb->buffer != NULL) {
 		ink_tex = fx_texture_from_buffer(&renderer->wlr_renderer, ink_fb->buffer);
@@ -548,7 +552,7 @@ void fx_render_pass_add_texture(struct fx_gles_render_pass *pass,
 		glActiveTexture(GL_TEXTURE0);
 		glUniform1i(shader->ink_backdrop, 3);
 		glUniform2f(shader->ink_size, ink_tex->width, ink_tex->height);
-		glUniform1f(shader->ink_reach, fx_options->ink_reach > 0 ? fx_options->ink_reach : 48.0f);
+		glUniform1f(shader->ink_reach, ink_reach);
 	}
 
 	if (use_effects) {
