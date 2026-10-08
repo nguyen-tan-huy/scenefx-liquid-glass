@@ -1728,36 +1728,54 @@ void fx_render_pass_add_blur(struct fx_gles_render_pass *pass,
 	push_fx_debug(renderer);
 
 	const bool has_strength = fx_options->blur_strength < 1.0;
-	struct fx_framebuffer *buffer = pass->fx_offscreen_buffers->optimized_blur_buffer;
-	TRACY_ZONE_TEXT_f("Use Optimized Blur: %d", fx_options->use_optimized_blur);
-	TRACY_ZONE_TEXT_f("Optimized Blur Successfully Used: %d",
-			buffer && fx_options->use_optimized_blur);
-	if (!fx_options->use_optimized_blur || has_strength) {
-		// Render the blur into its own buffer
-		struct fx_render_blur_pass_options blur_options = *fx_options;
-		if (fx_options->use_optimized_blur && has_strength) {
-			// Re-blur the saved non-blurred version of the optimized blur.
-			// Isn't as efficient as just using the optimized blur buffer
-			blur_options.current_buffer = pass->fx_offscreen_buffers->optimized_no_blur_buffer;
-		} else {
-			blur_options.current_buffer = pass->buffer;
-		}
-		buffer = get_main_buffer_blur(pass, &blur_options);
-	}
 	const struct fx_glass_options *g = &fx_options->glass;
 	bool glass_on = g->refraction > 0 || g->chroma > 0 || g->highlight > 0;
+	// swayctl: the kept backdrop (fx_glass_cache), blurred or not: when
+	// nothing changed under the pane, bend the kept copy - no blur, no
+	// backdrop re-read around what the window itself redrew (a hover, text)
 	struct fx_glass_cache_entry *cache = fx_options->glass_cache;
-	if (!buffer && glass_on && cache != NULL && cache->fb != NULL) {
-		// swayctl: the kept backdrop (fx_glass_cache): bring in just what
-		// changed under the pane (redrawn this frame up to here, so it holds
-		// only what's below the pane), then bend the copy - no backdrop re-read
-		// around what the window itself redrew
-		if (!pixman_region32_empty(&cache->refresh)) {
-			fx_render_pass_read_to_buffer(pass, &cache->refresh, cache->fb, pass->buffer);
-			pixman_region32_clear(&cache->refresh);
-		}
-		cache->valid = true;
+	bool keep = glass_on && cache != NULL && cache->fb != NULL;
+	struct fx_framebuffer *buffer = NULL;
+	if (keep && cache->valid && pixman_region32_empty(&cache->refresh)) {
 		buffer = cache->fb;
+	} else {
+		buffer = pass->fx_offscreen_buffers->optimized_blur_buffer;
+		TRACY_ZONE_TEXT_f("Use Optimized Blur: %d", fx_options->use_optimized_blur);
+		TRACY_ZONE_TEXT_f("Optimized Blur Successfully Used: %d",
+				buffer && fx_options->use_optimized_blur);
+		if (!fx_options->use_optimized_blur || has_strength) {
+			// Render the blur into its own buffer
+			struct fx_render_blur_pass_options blur_options = *fx_options;
+			if (fx_options->use_optimized_blur && has_strength) {
+				// Re-blur the saved non-blurred version of the optimized blur.
+				// Isn't as efficient as just using the optimized blur buffer
+				blur_options.current_buffer = pass->fx_offscreen_buffers->optimized_no_blur_buffer;
+			} else {
+				blur_options.current_buffer = pass->buffer;
+			}
+			// kept: blur all that is brought in, out to the bend's reach,
+			// not just what is drawn of the pane this frame
+			pixman_region32_t wide;
+			pixman_region32_init(&wide);
+			if (keep) {
+				pixman_region32_union(&wide, fx_options->tex_options.base.clip, &cache->refresh);
+				blur_options.tex_options.base.clip = &wide;
+			}
+			buffer = get_main_buffer_blur(pass, &blur_options);
+			pixman_region32_fini(&wide);
+		}
+		if (keep) {
+			// bring in just what changed under the pane (redrawn this frame
+			// up to here, so it holds only what's below the pane): blurred,
+			// or as it is for clear glass
+			if (!pixman_region32_empty(&cache->refresh)) {
+				fx_render_pass_read_to_buffer(pass, &cache->refresh, cache->fb,
+					buffer != NULL ? buffer : pass->buffer);
+				pixman_region32_clear(&cache->refresh);
+			}
+			cache->valid = true;
+			buffer = cache->fb;
+		}
 	}
 	if (!buffer && glass_on && pass->fx_offscreen_buffers->effects_buffer) {
 		// swayctl: clear glass (no blur): refract an untouched copy of what's

@@ -513,15 +513,19 @@ static bool glass_cache_usable(struct wlr_scene_blur *blur, struct blur_data *sc
 	if (!scene_node_get_root(&blur->node)->glass_cache) {
 		return false;
 	}
-	bool glass = blur->glass.refraction > 0 || blur->glass.chroma > 0 || blur->glass.highlight > 0;
-	if (!glass || blur->should_only_blur_bottom_layer) {
-		return false;
-	}
+	// any pane of glass, clear or blurred, tiled (bottom layer only) or not:
+	// what is kept is what the glass is drawn from, blurred if it is
+	(void)scene_blur;
+	return blur->glass.refraction > 0 || blur->glass.chroma > 0 || blur->glass.highlight > 0;
+}
+
+/** swayctl: buffer px a blurred pane's blur reads around each pixel; 0 = clear */
+static int glass_blur_size(struct wlr_scene_blur *blur, struct blur_data *scene_blur) {
 	if (blur->strength <= 0) {
-		return true;
+		return 0;
 	}
 	struct blur_data bd = blur_data_apply_strength(scene_blur, blur->strength);
-	return !is_scene_blur_enabled(&bd);
+	return is_scene_blur_enabled(&bd) ? blur_data_calc_size(&bd) : 0;
 }
 
 static struct fx_glass_cache_entry *glass_cached(struct wlr_scene_blur *blur,
@@ -3162,15 +3166,31 @@ static void glass_cache_prepare(struct wlr_scene_output *scene_output,
 		wlr_region_expand(&capture, &area, reach);
 		pixman_region32_intersect_rect(&capture, &capture, 0, 0, output->width, output->height);
 
+		// a blurred copy: a change spreads out to the blur's size, and the
+		// blur of what is brought in reads that far around it - all of it
+		// redrawn this frame, so none of it is the last frame's (the pane's
+		// own content)
+		int bsize = glass_blur_size(blur, &scene_output->scene->blur_data);
+
 		pixman_region32_t add; // damage this needs on top of the frame's
 		pixman_region32_init(&add);
 		if (full_damage) {
 			pixman_region32_copy(&e->refresh, &capture);
 		} else if (!e->valid) {
 			pixman_region32_copy(&e->refresh, &capture);
-			pixman_region32_copy(&add, &capture);
+			wlr_region_expand(&add, &capture, bsize);
 		} else {
-			pixman_region32_intersect(&e->refresh, &e->dirty, &capture);
+			if (bsize > 0) {
+				pixman_region32_t near; // changes the blurred copy can see
+				pixman_region32_init(&near);
+				wlr_region_expand(&near, &capture, bsize);
+				pixman_region32_intersect(&e->refresh, &e->dirty, &near);
+				wlr_region_expand(&e->refresh, &e->refresh, bsize);
+				pixman_region32_intersect(&e->refresh, &e->refresh, &capture);
+				pixman_region32_fini(&near);
+			} else {
+				pixman_region32_intersect(&e->refresh, &e->dirty, &capture);
+			}
 			if (!pixman_region32_empty(&e->refresh)) {
 				// the changed backdrop is redrawn (so it can be copied), and
 				// the glass that bends it
@@ -3178,12 +3198,14 @@ static void glass_cache_prepare(struct wlr_scene_output *scene_output,
 				pixman_region32_init(&bent);
 				wlr_region_expand(&bent, &e->refresh, reach);
 				pixman_region32_intersect(&bent, &bent, &area);
-				pixman_region32_union(&add, &e->refresh, &bent);
+				wlr_region_expand(&add, &e->refresh, bsize);
+				pixman_region32_union(&add, &add, &bent);
 				pixman_region32_fini(&bent);
 			}
 		}
 		pixman_region32_clear(&e->dirty);
 
+		pixman_region32_intersect_rect(&add, &add, 0, 0, output->width, output->height);
 		if (!pixman_region32_empty(&add)) {
 			pixman_region32_union(&render_data->damage, &render_data->damage, &add);
 			state->committed |= WLR_OUTPUT_STATE_DAMAGE;
