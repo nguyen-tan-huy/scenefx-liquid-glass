@@ -34,6 +34,38 @@ float mask_at(vec2 px) {
 	return clamp(texture2D(mask, mask_src.xy + uv * mask_src.zw).a / 0.003, 0.0, 1.0);
 }
 
+// swayctl: a bezel wider than the pane's corners would meet itself across
+// them on a diagonal crease (two edges, each bending on its own: a pane in
+// pieces). Where two edges at least 90 deg apart are both within the bezel,
+// take the distance a corner rounded at the bezel's own width would give -
+// the demo's geometry when bezel = radius - which joins the straight edges
+// continuously, so the rim can be wider than the corners and stay one piece.
+void round_corners(float dists[12], float r, inout float d, inout vec2 n) {
+	int ia = 0;
+	for (int i = 1; i < 12; i++) {
+		if (dists[i] < dists[ia]) { ia = i; }
+	}
+	float a = dists[ia];
+	float b = 1e4;
+	int ib = ia;
+	for (int i = 0; i < 12; i++) {
+		int dd = i - ia;
+		if (dd < 0) { dd = -dd; }
+		if (dd > 6) { dd = 12 - dd; }
+		if (dd >= 3 && dists[i] < b) { b = dists[i]; ib = i; }
+	}
+	if (a < r && b < r) {
+		vec2 ka = vec2(cos(float(ia) * 0.523599), sin(float(ia) * 0.523599));
+		vec2 kb = vec2(cos(float(ib) * 0.523599), sin(float(ib) * 0.523599));
+		vec2 q = vec2(r - a, r - b);
+		d = r - length(q);
+		vec2 nv = ka * q.x + kb * q.y;
+		if (length(nv) > 1e-4) { n = normalize(nv); }
+	} else {
+		d = min(a, b);
+	}
+}
+
 void main() {
 	vec2 px = box_pos + v_texcoord * field_span;
 	// Texels just outside the outline are found too (searching for where the
@@ -94,7 +126,15 @@ void main() {
 		if (!inside) {
 			nv = -nv;  // the outline is behind us: outward is away from it
 		}
-		x = inside ? clamp(min(dmin, bevel) / bevel, 0.0, 1.0) : 0.0;
+		if (inside) {
+			float dr = dmin;
+			vec2 nr = normalize(nv + vec2(1e-6));
+			round_corners(dists, bevel, dr, nr);
+			nv = nr * length(nv);  // the blend's strength (pull), the corner's direction
+			x = clamp(min(dr, bevel) / bevel, 0.0, 1.0);
+		} else {
+			x = 0.0;
+		}
 	}
 	// Only a texel whose whole 4x4 px cell is plainly inside, with no
 	// outline within 8 px, can stand in for its pixels; anything else

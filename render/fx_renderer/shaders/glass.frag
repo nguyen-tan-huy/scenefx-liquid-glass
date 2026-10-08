@@ -61,6 +61,38 @@ float mask_at(vec2 px) {
 // bend is measured from the *nearest* outline point (the demo's map is built
 // from the distance to the outline too). The same search glass_field.frag
 // caches at 1/4 resolution; run here only right next to the outline.
+// swayctl: a bezel wider than the pane's corners would meet itself across
+// them on a diagonal crease (two edges, each bending on its own: a pane in
+// pieces). Where two edges at least 90 deg apart are both within the bezel,
+// take the distance a corner rounded at the bezel's own width would give -
+// the demo's geometry when bezel = radius - which joins the straight edges
+// continuously, so the rim can be wider than the corners and stay one piece.
+void round_corners(float dists[12], float r, inout float d, inout vec2 n) {
+	int ia = 0;
+	for (int i = 1; i < 12; i++) {
+		if (dists[i] < dists[ia]) { ia = i; }
+	}
+	float a = dists[ia];
+	float b = 1e4;
+	int ib = ia;
+	for (int i = 0; i < 12; i++) {
+		int dd = i - ia;
+		if (dd < 0) { dd = -dd; }
+		if (dd > 6) { dd = 12 - dd; }
+		if (dd >= 3 && dists[i] < b) { b = dists[i]; ib = i; }
+	}
+	if (a < r && b < r) {
+		vec2 ka = vec2(cos(float(ia) * 0.523599), sin(float(ia) * 0.523599));
+		vec2 kb = vec2(cos(float(ib) * 0.523599), sin(float(ib) * 0.523599));
+		vec2 q = vec2(r - a, r - b);
+		d = r - length(q);
+		vec2 nv = ka * q.x + kb * q.y;
+		if (length(nv) > 1e-4) { n = normalize(nv); }
+	} else {
+		d = min(a, b);
+	}
+}
+
 void search_outline(vec2 px, out vec2 n, out float d, out float pull, out float bevel) {
 	bevel = max(edge, 16.0);
 	pull = 1.0;
@@ -114,7 +146,9 @@ void search_outline(vec2 px, out vec2 n, out float d, out float pull, out float 
 		vec2 nv = nsum / max(wsum, 1e-5);
 		pull = smoothstep(0.02, 0.25, length(nv));
 		n = nv / max(length(nv), 1e-5);
-		d = -min(dmin, bevel);
+		float dr = dmin;
+		round_corners(dists, bevel, dr, n);
+		d = -min(dr, bevel);
 	}
 }
 
@@ -313,16 +347,28 @@ void main() {
 		// whatever was far beyond such a pane across all of it - streaks.
 		// Big panes keep the full lens. `fit` scales the colour split too.
 		if (use_mask && abs(g_amt) > 4.0) {
-			// shaped pane: how thick it is here isn't known past two bezels,
-			// so walk inward along the normal (as far as the pull could
-			// matter: 2.5x it) until the pane ends
+			// shaped pane: how thick it is here isn't known past two bezels.
+			// Measure it along both axes (the pane's height and width here),
+			// never along the normal: that walk ran straight across at an
+			// edge's middle and diagonally near a corner, so the bend's fit
+			// jumped between the two - a strip with a seam at each corner.
 			float walk = 2.5 * abs(g_amt);
-			for (int i = 1; i <= 8; i++) {
-				float t = walk * float(i) / 8.0;
-				if (mask_at(px - n * t) < 0.5) {
-					across = min(across, -d + t);
-					break;
+			for (int ax = 0; ax < 2; ax++) {
+				vec2 dir = ax == 0 ? vec2(1.0, 0.0) : vec2(0.0, 1.0);
+				float ext = 0.0;
+				for (int sgn = 0; sgn < 2; sgn++) {
+					vec2 sd = sgn == 0 ? dir : -dir;
+					float e = walk;
+					for (int i = 1; i <= 8; i++) {
+						float t = walk * float(i) / 8.0;
+						if (mask_at(px + sd * t) < 0.5) {
+							e = t;
+							break;
+						}
+					}
+					ext += e;
 				}
+				across = min(across, ext);
 			}
 		}
 		float reach = max(0.4 * across, 4.0);
