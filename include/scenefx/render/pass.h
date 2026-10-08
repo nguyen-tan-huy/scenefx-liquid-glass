@@ -26,6 +26,11 @@ struct fx_gles_render_pass {
 	// NULL when no advanced effects like blur is being used in the current pass.
 	// Call `fx_render_pass_init_offscreen_buffers` to use advanced effects.
 	struct fx_offscreen_buffers *fx_offscreen_buffers;
+	// swayctl: the backdrop the last blurred pane of glass was drawn from,
+	// and that pane's box: key ink over blurred glass (no kept backdrop)
+	// reads it when the pane's own surface is drawn next
+	struct fx_framebuffer *ink_backdrop;
+	struct wlr_box ink_box;
 };
 
 struct fx_gradient {

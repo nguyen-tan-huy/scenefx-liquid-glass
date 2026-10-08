@@ -520,8 +520,16 @@ void fx_render_pass_add_texture(struct fx_gles_render_pass *pass,
 	// The uniform keeps its value per program: always set it.
 	struct wlr_texture *ink_tex = NULL;
 	struct fx_glass_cache_entry *ink = fx_options->ink_cache;
-	if (shader->ink >= 0 && ink != NULL && ink->valid && ink->fb != NULL && ink->fb->buffer != NULL) {
-		ink_tex = fx_texture_from_buffer(&renderer->wlr_renderer, ink->fb->buffer);
+	struct fx_framebuffer *ink_fb = NULL;
+	if (ink != NULL && ink->valid) {
+		ink_fb = ink->fb;
+	} else if (fx_options->ink && pass->ink_backdrop != NULL
+			&& wlr_box_equal(&pass->ink_box, &fx_options->base.dst_box)) {
+		// blurred glass: the blurred backdrop its pane was just drawn from
+		ink_fb = pass->ink_backdrop;
+	}
+	if (shader->ink >= 0 && fx_options->ink && ink_fb != NULL && ink_fb->buffer != NULL) {
+		ink_tex = fx_texture_from_buffer(&renderer->wlr_renderer, ink_fb->buffer);
 		// making it binds (and unbinds) on unit 0, where the surface's own
 		// texture already is: put that back
 		glActiveTexture(GL_TEXTURE0);
@@ -1767,6 +1775,10 @@ void fx_render_pass_add_blur(struct fx_gles_render_pass *pass,
 	}
 	if (!buffer) {
 		goto finish;
+	}
+	if (g->text == 3) {
+		pass->ink_backdrop = buffer;
+		pass->ink_box = fx_options->tex_options.base.dst_box;
 	}
 	if (fx_options->probe && fx_options->probe->want) {
 		backdrop_probe_grab(fx_options->probe, renderer, buffer,
