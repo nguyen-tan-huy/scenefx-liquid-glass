@@ -245,8 +245,8 @@ bool link_quad_grad_round_program(struct quad_grad_round_shader *shader, int max
 
 bool link_tex_program(struct tex_shader *shader, enum fx_tex_shader_source source,
 		bool effects) {
-	GLchar frag_src_part[4096];
-	GLchar frag_src[8192];
+	GLchar frag_src_part[16384];
+	GLchar frag_src[24576];
 	snprintf(frag_src_part, sizeof(frag_src_part),
 		tex_frag_src, source, effects);
 	snprintf(frag_src, sizeof(frag_src),
@@ -265,6 +265,10 @@ bool link_tex_program(struct tex_shader *shader, enum fx_tex_shader_source sourc
 	shader->tex_proj = glGetUniformLocation(prog, "tex_proj");
 
 	shader->discard_transparent = glGetUniformLocation(prog, "discard_transparent");
+	shader->ink = glGetUniformLocation(prog, "ink");
+	shader->ink_backdrop = glGetUniformLocation(prog, "ink_backdrop");
+	shader->ink_size = glGetUniformLocation(prog, "ink_size");
+	shader->ink_reach = glGetUniformLocation(prog, "ink_reach");
 
 	if (!effects) {
 		return true;

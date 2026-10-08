@@ -52,4 +52,34 @@ struct fx_glass_field_state {
 	bool all_dirty;          // new buffer size and the like: redo it all
 };
 
+/**
+ * swayctl: the clean backdrop under a pane of clear glass (no blur), kept
+ * between frames: what is behind it before the pane and everything above it
+ * is drawn, in output buffer px. The glass bends this copy instead of one
+ * taken from the frame being drawn, so when only the window on the glass
+ * changes (text typed, a hover, a new message) just what the client redrew
+ * is redrawn: no backdrop re-read around it out to the bend's reach (~2.5x
+ * `refraction`, hundreds of px) and nothing of the window's own last frame in
+ * what the glass bends. The copy is refreshed only where what is *under* the
+ * pane changed (`dirty`), and wholly when the pane moves, resizes or appears.
+ */
+#define FX_GLASS_CACHE_OUTPUTS 4
+
+struct fx_framebuffer;
+
+struct fx_glass_cache_entry {
+	const void *output;          // the wlr_scene_output it is for; NULL = unused
+	struct fx_framebuffer *fb;   // output-sized, the backdrop where `valid`
+	pixman_region32_t dirty;     // buffer px whose backdrop changed since copied
+	pixman_region32_t refresh;   // this frame: copy these from the frame into `fb`
+	bool valid;                  // `fb` holds the pane's whole area (else: copy it all)
+};
+
+struct fx_glass_cache {
+	struct fx_glass_cache_entry entries[FX_GLASS_CACHE_OUTPUTS];
+};
+
+/** swayctl: drop one output's copy (its framebuffer too) */
+void fx_glass_cache_entry_release(struct fx_glass_cache_entry *entry);
+
 #endif

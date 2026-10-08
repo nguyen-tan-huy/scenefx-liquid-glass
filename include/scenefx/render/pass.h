@@ -48,6 +48,11 @@ struct fx_render_texture_options {
 	struct fx_corner_fradii corners;
 	bool discard_transparent;
 	struct clipped_fregion clipped_region;
+	// swayctl: key ink over glass, `ink_cache` the pane's kept backdrop it
+	// reads (NULL: none to read - the ink is then always light)
+	bool ink;
+	struct fx_glass_cache_entry *ink_cache;
+	float ink_reach; // px the backdrop is averaged over
 };
 
 struct fx_render_rect_options {
@@ -87,6 +92,7 @@ struct fx_render_blur_pass_options {
 	struct fx_glass_options glass;
 	struct fx_backdrop_probe *probe; // swayctl: grab the backdrop when it wants one
 	struct fx_glass_field_state *field; // swayctl: shaped glass's cached shape field
+	struct fx_glass_cache_entry *glass_cache; // swayctl: the kept backdrop clear glass bends (NULL: none)
 	struct fx_render_texture_options tex_options;
 	struct fx_framebuffer *current_buffer;
 	struct blur_data *blur_data;
@@ -98,6 +104,14 @@ struct fx_render_blur_pass_options {
 };
 
 struct fx_gles_render_pass *fx_get_render_pass(struct wlr_render_pass *render_pass);
+
+/**
+ * swayctl: make sure `entry` has its output-sized framebuffer for this pass's
+ * buffer size; a new or resized one isn't `valid` (its backdrop is copied
+ * whole). False if it couldn't be made: the glass then doesn't use the cache.
+ */
+bool fx_render_pass_glass_cache_prepare(struct fx_gles_render_pass *pass,
+		struct wlr_output *output, struct fx_glass_cache_entry *entry);
 
 /**
  * Initializes the render pass offscreen buffers required for advanced effects

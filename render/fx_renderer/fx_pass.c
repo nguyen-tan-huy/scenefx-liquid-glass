@@ -96,6 +96,44 @@ bool fx_render_pass_init_offscreen_buffers(struct wlr_render_pass *render_pass,
 	return true;
 }
 
+bool fx_render_pass_glass_cache_prepare(struct fx_gles_render_pass *pass,
+		struct wlr_output *output, struct fx_glass_cache_entry *entry) {
+	struct fx_renderer *renderer = pass->buffer->renderer;
+	const int width = pass->buffer->buffer->width;
+	const int height = pass->buffer->buffer->height;
+	struct fx_framebuffer *before = entry->fb;
+	bool same = before != NULL && before->buffer != NULL
+		&& before->buffer->width == width && before->buffer->height == height;
+	bool failed = false;
+	fx_framebuffer_get_or_create_custom(renderer, output->allocator, width, height, true,
+			&entry->fb, &failed);
+	fx_framebuffer_bind(pass->buffer);
+	if (failed || entry->fb == NULL) {
+		entry->fb = NULL;
+		entry->valid = false;
+		return false;
+	}
+	if (!same) {
+		entry->valid = false;
+	}
+	return true;
+}
+
+void fx_glass_cache_entry_release(struct fx_glass_cache_entry *entry) {
+	if (entry->fb != NULL) {
+		if (entry->fb->buffer != NULL) {
+			wlr_buffer_drop(entry->fb->buffer);
+		} else {
+			fx_framebuffer_destroy(entry->fb);
+		}
+		entry->fb = NULL;
+	}
+	entry->output = NULL;
+	entry->valid = false;
+	pixman_region32_clear(&entry->dirty);
+	pixman_region32_clear(&entry->refresh);
+}
+
 ///
 /// Base Wlroots pass functions
 ///
@@ -478,6 +516,33 @@ void fx_render_pass_add_texture(struct fx_gles_render_pass *pass,
 
 	glUniform1f(shader->discard_transparent, fx_options->discard_transparent);
 
+	// swayctl: key ink over glass (fx_render_texture_options.ink_cache).
+	// The uniform keeps its value per program: always set it.
+	struct wlr_texture *ink_tex = NULL;
+	struct fx_glass_cache_entry *ink = fx_options->ink_cache;
+	if (shader->ink >= 0 && ink != NULL && ink->valid && ink->fb != NULL && ink->fb->buffer != NULL) {
+		ink_tex = fx_texture_from_buffer(&renderer->wlr_renderer, ink->fb->buffer);
+		// making it binds (and unbinds) on unit 0, where the surface's own
+		// texture already is: put that back
+		glActiveTexture(GL_TEXTURE0);
+		glBindTexture(texture->target, texture->tex);
+	}
+	glUniform1i(shader->ink, fx_options->ink && shader->ink >= 0);
+	if (fx_options->ink && ink_tex == NULL) {
+		glUniform2f(shader->ink_size, 0.0f, 0.0f); // nothing to read: light ink
+	}
+	if (ink_tex != NULL) {
+		struct fx_texture *bt = fx_get_texture(ink_tex);
+		glActiveTexture(GL_TEXTURE3);
+		glBindTexture(bt->target, bt->tex);
+		glTexParameteri(bt->target, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+		glTexParameteri(bt->target, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+		glActiveTexture(GL_TEXTURE0);
+		glUniform1i(shader->ink_backdrop, 3);
+		glUniform2f(shader->ink_size, ink_tex->width, ink_tex->height);
+		glUniform1f(shader->ink_reach, fx_options->ink_reach > 0 ? fx_options->ink_reach : 48.0f);
+	}
+
 	if (use_effects) {
 		struct fx_corner_fradii corners = fx_options->corners;
 
@@ -497,6 +562,12 @@ void fx_render_pass_add_texture(struct fx_gles_render_pass *pass,
 	pixman_region32_fini(&clip_region);
 
 	glBindTexture(texture->target, 0);
+	if (ink_tex != NULL) {
+		glActiveTexture(GL_TEXTURE3);
+		glBindTexture(fx_get_texture(ink_tex)->target, 0);
+		glActiveTexture(GL_TEXTURE0);
+		wlr_texture_destroy(ink_tex);
+	}
 
 	pop_fx_debug(renderer);
 	TRACY_BOTH_ZONES_END;
@@ -1663,6 +1734,19 @@ void fx_render_pass_add_blur(struct fx_gles_render_pass *pass,
 	}
 	const struct fx_glass_options *g = &fx_options->glass;
 	bool glass_on = g->refraction > 0 || g->chroma > 0 || g->highlight > 0;
+	struct fx_glass_cache_entry *cache = fx_options->glass_cache;
+	if (!buffer && glass_on && cache != NULL && cache->fb != NULL) {
+		// swayctl: the kept backdrop (fx_glass_cache): bring in just what
+		// changed under the pane (redrawn this frame up to here, so it holds
+		// only what's below the pane), then bend the copy - no backdrop re-read
+		// around what the window itself redrew
+		if (!pixman_region32_empty(&cache->refresh)) {
+			fx_render_pass_read_to_buffer(pass, &cache->refresh, cache->fb, pass->buffer);
+			pixman_region32_clear(&cache->refresh);
+		}
+		cache->valid = true;
+		buffer = cache->fb;
+	}
 	if (!buffer && glass_on && pass->fx_offscreen_buffers->effects_buffer) {
 		// swayctl: clear glass (no blur): refract an untouched copy of what's
 		// behind. With the demo IOR (2.45) the field pulls up to ~2.5x

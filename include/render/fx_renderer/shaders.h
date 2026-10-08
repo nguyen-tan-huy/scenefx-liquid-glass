@@ -117,6 +117,12 @@ struct tex_shader {
 
 	GLint discard_transparent;
 
+	// swayctl: key ink (RGBA only; -1 in the others)
+	GLint ink;
+	GLint ink_backdrop;
+	GLint ink_size;
+	GLint ink_reach;
+
 	// Only used for the effects shader
 	struct {
 		GLint size;

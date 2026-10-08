@@ -190,6 +190,12 @@ void wlr_scene_node_destroy(struct wlr_scene_node *node) {
 		struct wlr_scene_blur *blur = wlr_scene_blur_from_node(node);
 		linked_node_destroy(&blur->transparency_mask_source);
 		pixman_region32_fini(&blur->field.dirty);
+		wl_list_remove(&blur->glass_link);
+		for (int i = 0; i < FX_GLASS_CACHE_OUTPUTS; i++) {
+			fx_glass_cache_entry_release(&blur->glass_cache.entries[i]);
+			pixman_region32_fini(&blur->glass_cache.entries[i].dirty);
+			pixman_region32_fini(&blur->glass_cache.entries[i].refresh);
+		}
 	}
 
 	assert(wl_list_empty(&node->events.destroy.listener_list));
@@ -215,6 +221,7 @@ struct wlr_scene *wlr_scene_create(void) {
 	scene_tree_init(&scene->tree, NULL);
 
 	wl_list_init(&scene->outputs);
+	wl_list_init(&scene->glass_blurs);
 	wl_list_init(&scene->linux_dmabuf_v1_destroy.link);
 	wl_list_init(&scene->gamma_control_manager_v1_destroy.link);
 	wl_list_init(&scene->gamma_control_manager_v1_set_gamma.link);
@@ -232,6 +239,8 @@ struct wlr_scene *wlr_scene_create(void) {
 	scene->direct_scanout = !env_parse_bool("WLR_SCENE_DISABLE_DIRECT_SCANOUT");
 	scene->calculate_visibility = !env_parse_bool("WLR_SCENE_DISABLE_VISIBILITY");
 	scene->highlight_transparent_region = env_parse_bool("WLR_SCENE_HIGHLIGHT_TRANSPARENT_REGION");
+	const char *glass_cache_env = getenv("WLR_SCENE_GLASS_CACHE");
+	scene->glass_cache = glass_cache_env == NULL || strcmp(glass_cache_env, "0") != 0;
 
 	scene->blur_data = blur_data_get_default();
 
@@ -469,6 +478,150 @@ static void transform_output_box(struct wlr_box *box, const struct render_data *
 	wlr_box_transform(box, box, transform, data->trans_width, data->trans_height);
 }
 
+// swayctl: the kept backdrop of clear glass (see fx_glass_cache in
+// fx/glass.h). Every damage the scene takes is sorted against each pane:
+// from the pane's own window (its surfaces redrawing): the backdrop under
+// it didn't change; from the pane itself or a tree above it (moved,
+// resized, shown, hidden): copy it all again; from anything else (the
+// wallpaper, another window, the bar): what's under that damage is stale.
+
+static struct fx_glass_cache_entry *glass_cache_entry(struct wlr_scene_blur *blur,
+		const struct wlr_scene_output *scene_output, bool create) {
+	struct fx_glass_cache_entry *free_entry = NULL;
+	for (int i = 0; i < FX_GLASS_CACHE_OUTPUTS; i++) {
+		struct fx_glass_cache_entry *e = &blur->glass_cache.entries[i];
+		if (e->output == scene_output) {
+			return e;
+		}
+		if (e->output == NULL && free_entry == NULL) {
+			free_entry = e;
+		}
+	}
+	if (!create || free_entry == NULL) {
+		return NULL;
+	}
+	free_entry->output = scene_output;
+	free_entry->valid = false;
+	pixman_region32_clear(&free_entry->dirty);
+	pixman_region32_clear(&free_entry->refresh);
+	return free_entry;
+}
+
+// swayctl: clear glass (no blur) keeps its backdrop (fx_glass_cache): the
+// copy it bends is the kept one, refreshed where what's under it changed
+static bool glass_cache_usable(struct wlr_scene_blur *blur, struct blur_data *scene_blur) {
+	if (!scene_node_get_root(&blur->node)->glass_cache) {
+		return false;
+	}
+	bool glass = blur->glass.refraction > 0 || blur->glass.chroma > 0 || blur->glass.highlight > 0;
+	if (!glass || blur->should_only_blur_bottom_layer) {
+		return false;
+	}
+	if (blur->strength <= 0) {
+		return true;
+	}
+	struct blur_data bd = blur_data_apply_strength(scene_blur, blur->strength);
+	return !is_scene_blur_enabled(&bd);
+}
+
+static struct fx_glass_cache_entry *glass_cached(struct wlr_scene_blur *blur,
+		const struct wlr_scene_output *scene_output) {
+	if (!glass_cache_usable(blur, &scene_output->scene->blur_data)) {
+		return NULL;
+	}
+	struct fx_glass_cache_entry *e = glass_cache_entry(blur, scene_output, false);
+	return e != NULL && e->fb != NULL ? e : NULL;
+}
+
+enum glass_damage_kind {
+	GLASS_DAMAGE_OWN,   // the pane's own window redrew: the backdrop is as it was
+	GLASS_DAMAGE_MOVED, // the pane (or a tree it is in) changed: copy it all again
+	GLASS_DAMAGE_OTHER, // something else: the backdrop under it may have changed
+};
+
+static enum glass_damage_kind glass_damage_kind(struct wlr_scene_blur *blur,
+		struct wlr_scene_node *source) {
+	if (source == NULL) {
+		return GLASS_DAMAGE_OTHER;
+	}
+	for (struct wlr_scene_node *n = &blur->node; n != NULL;
+			n = n->parent ? &n->parent->node : NULL) {
+		if (n == source) {
+			return GLASS_DAMAGE_MOVED;
+		}
+	}
+	// the pane's owner: the window's (or layer surface's) tree it sits in,
+	// under that window's surfaces
+	struct wlr_scene_node *owner = blur->node.parent ? &blur->node.parent->node : NULL;
+	for (struct wlr_scene_node *n = source; n != NULL && owner != NULL;
+			n = n->parent ? &n->parent->node : NULL) {
+		if (n == owner) {
+			return GLASS_DAMAGE_OWN;
+		}
+	}
+	return GLASS_DAMAGE_OTHER;
+}
+
+static void glass_cache_invalidate_output(struct wlr_scene *scene,
+		const struct wlr_scene_output *scene_output) {
+	struct wlr_scene_blur *blur;
+	wl_list_for_each(blur, &scene->glass_blurs, glass_link) {
+		for (int i = 0; i < FX_GLASS_CACHE_OUTPUTS; i++) {
+			struct fx_glass_cache_entry *e = &blur->glass_cache.entries[i];
+			if (e->output != NULL && (scene_output == NULL || e->output == scene_output)) {
+				e->valid = false;
+				pixman_region32_clear(&e->dirty);
+			}
+		}
+	}
+}
+
+/** Damage `output_damage` (buffer px of `scene_output`) caused by `source`. */
+static void glass_cache_note_output_damage(struct wlr_scene *scene,
+		const struct wlr_scene_output *scene_output, struct wlr_scene_node *source,
+		const pixman_region32_t *output_damage) {
+	if (pixman_region32_empty(output_damage)) {
+		return;
+	}
+	struct wlr_scene_blur *blur;
+	wl_list_for_each(blur, &scene->glass_blurs, glass_link) {
+		struct fx_glass_cache_entry *e = glass_cache_entry(blur, scene_output, false);
+		if (e == NULL || !e->valid) {
+			continue;
+		}
+		switch (glass_damage_kind(blur, source)) {
+		case GLASS_DAMAGE_OWN:
+			break;
+		case GLASS_DAMAGE_MOVED:
+			e->valid = false;
+			pixman_region32_clear(&e->dirty);
+			break;
+		case GLASS_DAMAGE_OTHER:
+			pixman_region32_union(&e->dirty, &e->dirty, output_damage);
+			break;
+		}
+	}
+}
+
+/** The same for `damage` in layout px, on every output. */
+static void glass_cache_note_damage(struct wlr_scene *scene, struct wlr_scene_node *source,
+		const pixman_region32_t *damage) {
+	if (wl_list_empty(&scene->glass_blurs) || pixman_region32_empty(damage)) {
+		return;
+	}
+	struct wlr_scene_output *scene_output;
+	wl_list_for_each(scene_output, &scene->outputs, link) {
+		pixman_region32_t output_damage;
+		pixman_region32_init(&output_damage);
+		pixman_region32_copy(&output_damage, damage);
+		pixman_region32_translate(&output_damage, -scene_output->x, -scene_output->y);
+		scale_region(&output_damage, scene_output->output->scale, true);
+		output_to_buffer_coords(&output_damage, scene_output->output);
+		glass_cache_note_output_damage(scene, scene_output, source, &output_damage);
+		pixman_region32_fini(&output_damage);
+	}
+}
+
 static void scene_output_damage(struct wlr_scene_output *scene_output,
 		const pixman_region32_t *damage) {
 	struct wlr_output *output = scene_output->output;
@@ -490,6 +643,7 @@ static void scene_output_damage(struct wlr_scene_output *scene_output,
 
 static void scene_output_damage_whole(struct wlr_scene_output *scene_output) {
 	struct wlr_output *output = scene_output->output;
+	glass_cache_invalidate_output(scene_output->scene, scene_output);
 
 	pixman_region32_t damage;
 	pixman_region32_init_rect(&damage, 0, 0, output->width, output->height);
@@ -845,6 +999,7 @@ static void scene_node_update(struct wlr_scene_node *node,
 			scene_node_cleanup_when_disabled(node, scene->restack_xwayland_surfaces, &scene->outputs);
 
 			scene_update_region(scene, damage);
+			glass_cache_note_damage(scene, node, damage);
 			scene_damage_outputs(scene, damage);
 			pixman_region32_fini(damage);
 		}
@@ -868,6 +1023,7 @@ static void scene_node_update(struct wlr_scene_node *node,
 	pixman_region32_fini(&update_region);
 
 	scene_node_visibility(node, damage);
+	glass_cache_note_damage(scene, node, damage);
 	scene_damage_outputs(scene, damage);
 	pixman_region32_fini(damage);
 }
@@ -1112,6 +1268,11 @@ struct wlr_scene_blur *wlr_scene_blur_create(struct wlr_scene_tree *parent,
 	blur->field.all_dirty = true;
 	blur->width = width;
 	blur->height = height;
+	for (int i = 0; i < FX_GLASS_CACHE_OUTPUTS; i++) {
+		pixman_region32_init(&blur->glass_cache.entries[i].dirty);
+		pixman_region32_init(&blur->glass_cache.entries[i].refresh);
+	}
+	wl_list_insert(&scene_node_get_root(&blur->node)->glass_blurs, &blur->glass_link);
 
 	scene_node_update(&blur->node, NULL);
 
@@ -1563,6 +1724,7 @@ void wlr_scene_buffer_set_buffer_with_options(struct wlr_scene_buffer *scene_buf
 			(int)round((lx - scene_output->x) * output_scale),
 			(int)round((ly - scene_output->y) * output_scale));
 		output_to_buffer_coords(&output_damage, scene_output->output);
+		glass_cache_note_output_damage(scene, scene_output, &scene_buffer->node, &output_damage);
 		scene_output_damage(scene_output, &output_damage);
 		pixman_region32_fini(&output_damage);
 	}
@@ -2173,6 +2335,18 @@ static void scene_entry_render(struct render_list_entry *entry, const struct ren
 			.clipped_region = {0},
 		};
 
+		// swayctl: the buffer shaping a pane of glass with key ink (`glass
+		// text auto`): its key-coloured text is inked over the kept backdrop
+		struct linked_node *ink_link = linked_nodes_get_sibling(&scene_buffer->blur);
+		if (ink_link != NULL) {
+			struct wlr_scene_blur *inked = wl_container_of(ink_link, inked, transparency_mask_source);
+			if (inked->glass.text == 3) {
+				tex_options.ink = true;
+				tex_options.ink_cache = glass_cached(inked, data->output);
+				tex_options.ink_reach = 40.0f * data->scale;
+			}
+		}
+
 		// TODO: Use the base wlr_render_pass_add_texture as a fast-path in the future
 		fx_render_pass_add_texture(fx_pass, &tex_options);
 
@@ -2299,6 +2473,7 @@ static void scene_entry_render(struct render_list_entry *entry, const struct ren
 			},
 			.probe = blur->probe,
 			.field = mask != NULL ? &blur->field : NULL,
+			.glass_cache = glass_cached(blur, data->output),
 			.use_optimized_blur = blur->should_only_blur_bottom_layer,
 			.blur_data = &scene->blur_data,
 			.ignore_transparent = mask != NULL,
@@ -2489,6 +2664,7 @@ static void scene_output_handle_damage(struct wl_listener *listener, void *data)
 	pixman_region32_copy(&damage, event->damage);
 	wlr_region_transform(&damage, &damage,
 		wlr_output_transform_invert(output->transform), width, height);
+	glass_cache_note_output_damage(scene_output->scene, scene_output, NULL, &damage);
 	scene_output_damage(scene_output, &damage);
 	pixman_region32_fini(&damage);
 }
@@ -2571,6 +2747,14 @@ void wlr_scene_output_destroy(struct wlr_scene_output *scene_output) {
 	}
 
 	wl_signal_emit_mutable(&scene_output->events.destroy, NULL);
+
+	struct wlr_scene_blur *glass_blur;
+	wl_list_for_each(glass_blur, &scene_output->scene->glass_blurs, glass_link) {
+		struct fx_glass_cache_entry *e = glass_cache_entry(glass_blur, scene_output, false);
+		if (e != NULL) {
+			fx_glass_cache_entry_release(e);
+		}
+	}
 
 	scene_node_output_update(&scene_output->scene->tree.node,
 		&scene_output->scene->outputs, scene_output, NULL);
@@ -2934,6 +3118,81 @@ bool wlr_scene_output_needs_frame(struct wlr_scene_output *scene_output) {
 	return scene_output->output->needs_frame ||
 		!pixman_region32_empty(&scene_output->pending_commit_damage) ||
 		scene_output->gamma_lut_changed;
+}
+
+/**
+ * Before a frame: for each pane of clear glass on it, what of its kept
+ * backdrop to bring in this frame (`refresh`), and the damage that needs -
+ * the whole pane and its reach when the copy isn't valid, else only what
+ * changed under it and the glass that bends it. What the pane's own window
+ * redrew adds nothing: the glass there bends the kept copy.
+ */
+static void glass_cache_prepare(struct wlr_scene_output *scene_output,
+		struct render_data *render_data, struct wlr_output_state *state,
+		struct fx_gles_render_pass *fx_pass, struct render_list_entry *list_data,
+		int list_len, bool full_damage) {
+	struct wlr_output *output = scene_output->output;
+	for (int i = 0; i < list_len; i++) {
+		struct wlr_scene_node *node = list_data[i].node;
+		if (node->type != WLR_SCENE_NODE_BLUR) {
+			continue;
+		}
+		struct wlr_scene_blur *blur = wlr_scene_blur_from_node(node);
+		if (!glass_cache_usable(blur, &scene_output->scene->blur_data)) {
+			continue;
+		}
+		struct fx_glass_cache_entry *e = glass_cache_entry(blur, scene_output, true);
+		if (e == NULL || !fx_render_pass_glass_cache_prepare(fx_pass, output, e)) {
+			continue;
+		}
+
+		const struct fx_glass_options *g = &blur->glass;
+		int reach = (int)ceilf((g->refraction * 2.5f + g->refraction * 0.20f * (g->chroma > 0 ? 1.0f : 0.0f))
+			* render_data->scale) + 12;
+
+		pixman_region32_t area; // the pane, buffer px
+		pixman_region32_init(&area);
+		pixman_region32_copy(&area, &node->visible);
+		pixman_region32_translate(&area, -scene_output->x, -scene_output->y);
+		logical_to_buffer_coords(&area, render_data, false);
+		pixman_region32_intersect_rect(&area, &area, 0, 0, output->width, output->height);
+
+		pixman_region32_t capture; // what the glass may read: the pane and its reach
+		pixman_region32_init(&capture);
+		wlr_region_expand(&capture, &area, reach);
+		pixman_region32_intersect_rect(&capture, &capture, 0, 0, output->width, output->height);
+
+		pixman_region32_t add; // damage this needs on top of the frame's
+		pixman_region32_init(&add);
+		if (full_damage) {
+			pixman_region32_copy(&e->refresh, &capture);
+		} else if (!e->valid) {
+			pixman_region32_copy(&e->refresh, &capture);
+			pixman_region32_copy(&add, &capture);
+		} else {
+			pixman_region32_intersect(&e->refresh, &e->dirty, &capture);
+			if (!pixman_region32_empty(&e->refresh)) {
+				// the changed backdrop is redrawn (so it can be copied), and
+				// the glass that bends it
+				pixman_region32_t bent;
+				pixman_region32_init(&bent);
+				wlr_region_expand(&bent, &e->refresh, reach);
+				pixman_region32_intersect(&bent, &bent, &area);
+				pixman_region32_union(&add, &e->refresh, &bent);
+				pixman_region32_fini(&bent);
+			}
+		}
+		pixman_region32_clear(&e->dirty);
+
+		if (!pixman_region32_empty(&add)) {
+			pixman_region32_union(&render_data->damage, &render_data->damage, &add);
+			state->committed |= WLR_OUTPUT_STATE_DAMAGE;
+			pixman_region32_union(&state->damage, &state->damage, &add);
+		}
+		pixman_region32_fini(&add);
+		pixman_region32_fini(&capture);
+		pixman_region32_fini(&area);
+	}
 }
 
 static bool should_blur_node_extend_damage(struct wlr_scene_node *node,
@@ -3435,6 +3694,11 @@ bool wlr_scene_output_build_state(struct wlr_scene_output *scene_output,
 			pixman_region32_contains_rectangle(&original_damage, &output_box) ==
 			PIXMAN_REGION_IN;
 
+		// swayctl: clear glass bends its kept backdrop; only what changed
+		// under it is redrawn for it
+		glass_cache_prepare(scene_output, &render_data, state, fx_pass,
+			list_data, list_len, full_damage);
+
 		// The extra region we copy and paste onto the framebuffer after render
 		// for artifact removal
 		pixman_region32_t blur_padding_region;
@@ -3452,6 +3716,11 @@ bool wlr_scene_output_build_state(struct wlr_scene_output *scene_output,
 			struct render_list_entry *entry = &list_data[i];
 			struct wlr_scene_node *node = entry->node;
 			struct blur_data blur_data = scene_output->scene->blur_data;
+			// swayctl: kept-backdrop glass did its own (glass_cache_prepare)
+			if (node->type == WLR_SCENE_NODE_BLUR
+					&& glass_cached(wlr_scene_blur_from_node(node), scene_output) != NULL) {
+				continue;
+			}
 			if (!should_blur_node_extend_damage(node, fx_pass, &blur_data)) {
 				continue;
 			}

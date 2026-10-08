@@ -362,7 +362,7 @@ void main() {
 			if (lum > target) {
 				color *= pow(target / lum, 1.0 / 2.2);
 			}
-		} else {
+		} else if (text_mode == 2) {
 			float target = 0.25;
 			if (lum < target) {
 				float t = (target - lum) / max(1.0 - lum, 1e-3);

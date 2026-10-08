@@ -127,6 +127,8 @@ struct wlr_scene {
 		bool highlight_transparent_region;
 
 		struct blur_data blur_data;
+		struct wl_list glass_blurs; // swayctl: wlr_scene_blur.glass_link (every blur node)
+		bool glass_cache; // swayctl: clear glass keeps its backdrop (WLR_SCENE_GLASS_CACHE=0: off)
 	} WLR_PRIVATE;
 };
 
@@ -182,6 +184,8 @@ struct wlr_scene_blur {
 	struct fx_glass_options glass; // swayctl
 	struct fx_backdrop_probe *probe; // swayctl: owned by the compositor
 	struct fx_glass_field_state field; // swayctl: shaped glass, see fx/glass.h
+	struct fx_glass_cache glass_cache; // swayctl: the backdrop it bends, kept, see fx/glass.h
+	struct wl_list glass_link;         // swayctl: wlr_scene.glass_blurs
 
 	bool should_only_blur_bottom_layer;
 
