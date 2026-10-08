@@ -326,7 +326,12 @@ void main() {
 			}
 		}
 		float reach = max(0.4 * across, 4.0);
-		float fit = abs(g_amt) > reach ? reach / abs(g_amt) : 1.0;
+		// Scale the whole profile to fit (by its pull at the rim), never clip
+		// it pixel by pixel: a clip made the outer band one flat shift - a
+		// copied strip with a seam, each edge its own, the pane read as four
+		// pieces - where the demo's lens falls off smoothly from the rim.
+		float rim_amt = abs(demo_disp(0.0, bevel, thickness, ior_g) / denom * refraction * pull);
+		float fit = rim_amt > reach ? reach / rim_amt : 1.0;
 		fit *= body;
 		g_amt *= fit;
 		// light smear along the bend so steep gradients don't stair-step: the pull
