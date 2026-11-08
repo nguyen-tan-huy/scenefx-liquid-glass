@@ -874,6 +874,27 @@ static bool scene_node_update_iterator(struct wlr_scene_node *node,
 		scene_node_opaque_region(node, lx, ly, &opaque);
 		pixman_region32_subtract(data->visible, data->visible, &opaque);
 		pixman_region32_fini(&opaque);
+
+		// swayctl: a pane of glass reads what is drawn below it, out to the
+		// reach of its bend. What sits above the pane (the window's own opaque
+		// content: a slider's fill, text) culled the nodes below it there, so
+		// the frame held the last frame's content in those pixels - the pane's
+		// own content - and the glass bent it into its rim (a copy of the
+		// slider above and below it). Everything below a pane of glass is
+		// drawn in full where the glass reads it.
+		if (node->type == WLR_SCENE_NODE_BLUR) {
+			struct wlr_scene_blur *glass_blur = wlr_scene_blur_from_node(node);
+			const struct fx_glass_options *g = &glass_blur->glass;
+			if (g->refraction > 0 || g->chroma > 0 || g->highlight > 0) {
+				int reach = (int)ceilf(g->refraction * 2.7f) + 12;
+				pixman_region32_t read;
+				pixman_region32_init_rect(&read, lx - reach, ly - reach,
+					box.width + 2 * reach, box.height + 2 * reach);
+				pixman_region32_intersect(&read, &read, data->update_region);
+				pixman_region32_union(data->visible, data->visible, &read);
+				pixman_region32_fini(&read);
+			}
+		}
 	}
 
 	update_node_update_outputs(node, data->outputs, NULL, NULL);
