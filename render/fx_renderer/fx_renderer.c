@@ -95,6 +95,7 @@ static inline void free_shaders(struct fx_renderer *renderer) {
 	glDeleteProgram(renderer->shaders.tex_effects_rgbx.program);
 	glDeleteProgram(renderer->shaders.tex_effects_ext.program);
 	glDeleteProgram(renderer->shaders.box_shadow.program);
+	glDeleteProgram(renderer->shaders.shaped_shadow.program);
 	glDeleteProgram(renderer->shaders.blur1.program);
 	glDeleteProgram(renderer->shaders.blur2.program);
 	glDeleteProgram(renderer->shaders.blur_effects.program);
@@ -507,6 +508,10 @@ static bool link_shaders(struct fx_renderer *renderer) {
 	}
 	if (!link_blur_effects_program(&renderer->shaders.blur_effects)) {
 		wlr_log(WLR_ERROR, "Could not link blur_effects shader");
+		goto error;
+	}
+	if (!link_shaped_shadow_program(&renderer->shaders.shaped_shadow)) {
+		wlr_log(WLR_ERROR, "Could not link shaped shadow shader");
 		goto error;
 	}
 	if (!link_glass_program(&renderer->shaders.glass)) {

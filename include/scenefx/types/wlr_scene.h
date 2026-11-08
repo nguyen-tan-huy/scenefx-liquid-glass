@@ -170,6 +170,11 @@ struct wlr_scene_shadow {
 	float blur_sigma;
 
 	struct clipped_region clipped_region;
+
+	// swayctl: when set, the shadow is of what this buffer draws (its alpha), not of a box, and is
+	// moved from it by (shift_x, shift_y); see shaped_shadow.frag
+	struct linked_node transparency_mask_source;
+	int shift_x, shift_y;
 };
 
 struct wlr_scene_blur {
@@ -278,6 +283,7 @@ struct wlr_scene_buffer {
 
 	struct fx_corner_radii corners;
 	struct linked_node blur;
+	struct linked_node shadow; // swayctl: the shaped shadow this buffer's alpha makes
 };
 
 /** A viewport for an output in the scene-graph */
@@ -617,6 +623,13 @@ void wlr_scene_shadow_set_color(struct wlr_scene_shadow *shadow, const float col
  */
 void wlr_scene_shadow_set_clipped_region(struct wlr_scene_shadow *shadow,
 		struct clipped_region clipped_region);
+
+/**
+ * swayctl: shadow what `source` draws (its alpha: panes, pills, a window's rounded shape) instead of a
+ * box; NULL goes back to the box. `shift_x`/`shift_y` move it from the shape.
+ */
+void wlr_scene_shadow_set_transparency_mask_source(struct wlr_scene_shadow *shadow,
+	struct wlr_scene_buffer *source, int shift_x, int shift_y);
 
 /**
  * Add a node displaying a blur to the scene-graph.

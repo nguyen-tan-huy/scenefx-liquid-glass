@@ -82,6 +82,8 @@ struct fx_render_rounded_rect_grad_options {
 	struct fx_corner_fradii corners;
 };
 
+struct fx_texture;
+
 struct fx_render_box_shadow_options {
 	struct wlr_box box;
 	struct clipped_fregion clipped_region;
@@ -91,6 +93,14 @@ struct fx_render_box_shadow_options {
 	float blur_sigma;
 	int corner_radius;
 	struct wlr_render_color color;
+
+	/* swayctl: the shadow of what a surface draws (its alpha) instead of its box. `mask` is the
+	 * surface's texture, `mask_src` the part of it that is shown (px), `mask_box` where it is
+	 * drawn (output px) and `shift` how far the shadow is moved from it (px). NULL = a box. */
+	struct fx_texture *mask;
+	struct wlr_fbox mask_src;
+	struct wlr_box mask_box;
+	float shift_x, shift_y;
 };
 
 struct fx_render_blur_pass_options {

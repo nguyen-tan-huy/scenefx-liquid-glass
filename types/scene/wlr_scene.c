@@ -18,6 +18,7 @@
 #include <wlr/util/transform.h>
 
 #include "render/color.h"
+#include "render/fx_renderer/fx_renderer.h"
 #include "render/tracy.h"
 #include "scenefx/render/fx_renderer/fx_offscreen_buffers.h"
 #include "scenefx/render/pass.h"
@@ -158,6 +159,7 @@ void wlr_scene_node_destroy(struct wlr_scene_node *node) {
 		pixman_region32_fini(&scene_buffer->opaque_region);
 		wlr_drm_syncobj_timeline_unref(scene_buffer->wait_timeline);
 		linked_node_destroy(&scene_buffer->blur);
+		linked_node_destroy(&scene_buffer->shadow);
 
 		assert(wl_list_empty(&scene_buffer->events.output_leave.listener_list));
 		assert(wl_list_empty(&scene_buffer->events.output_enter.listener_list));
@@ -186,6 +188,9 @@ void wlr_scene_node_destroy(struct wlr_scene_node *node) {
 				&scene_tree->children, link) {
 			wlr_scene_node_destroy(child);
 		}
+	} else if (node->type == WLR_SCENE_NODE_SHADOW) {
+		struct wlr_scene_shadow *shadow = wlr_scene_shadow_from_node(node);
+		linked_node_destroy(&shadow->transparency_mask_source);
 	} else if (node->type == WLR_SCENE_NODE_BLUR) {
 		struct wlr_scene_blur *blur = wlr_scene_blur_from_node(node);
 		linked_node_destroy(&blur->transparency_mask_source);
@@ -1184,10 +1189,39 @@ struct wlr_scene_shadow *wlr_scene_shadow_create(struct wlr_scene_tree *parent,
 	scene_shadow->blur_sigma = blur_sigma;
 	memcpy(scene_shadow->color, color, sizeof(scene_shadow->color));
 	scene_shadow->clipped_region = clipped_region_get_default();
+	scene_shadow->transparency_mask_source = linked_node_init();
 
 	scene_node_update(&scene_shadow->node, NULL);
 
 	return scene_shadow;
+}
+
+void wlr_scene_shadow_set_transparency_mask_source(struct wlr_scene_shadow *shadow,
+		struct wlr_scene_buffer *source, int shift_x, int shift_y) {
+	bool same = (source == NULL && shadow->transparency_mask_source.link == NULL) ||
+		(source != NULL && linked_nodes_are_linked(&shadow->transparency_mask_source, &source->shadow));
+	if (same && shadow->shift_x == shift_x && shadow->shift_y == shift_y) {
+		return;
+	}
+	if (!same) {
+		linked_node_destroy(&shadow->transparency_mask_source);
+		if (source != NULL) {
+			linked_node_destroy(&source->shadow);
+			linked_node_init_link(&shadow->transparency_mask_source, &source->shadow);
+		}
+	}
+	shadow->shift_x = shift_x;
+	shadow->shift_y = shift_y;
+	scene_node_update(&shadow->node, NULL);
+}
+
+static struct wlr_scene_buffer *scene_shadow_get_mask_source(struct wlr_scene_shadow *shadow) {
+	struct linked_node *node = linked_nodes_get_sibling(&shadow->transparency_mask_source);
+	if (node == NULL) {
+		return NULL;
+	}
+	struct wlr_scene_buffer *output = wl_container_of(node, output, shadow);
+	return output;
 }
 
 void wlr_scene_shadow_set_size(struct wlr_scene_shadow *shadow, int width, int height) {
@@ -1564,6 +1598,7 @@ struct wlr_scene_buffer *wlr_scene_buffer_create(struct wlr_scene_tree *parent,
 	scene_buffer->corners = corner_radii_none();
 
 	scene_buffer->blur = linked_node_init();
+	scene_buffer->shadow = linked_node_init();
 
 	scene_buffer_set_buffer(scene_buffer, buffer);
 	scene_node_update(&scene_buffer->node, NULL);
@@ -1637,6 +1672,14 @@ void wlr_scene_buffer_set_buffer_with_options(struct wlr_scene_buffer *scene_buf
 		} else {
 			pixman_region32_union(&shaped->field.dirty, &shaped->field.dirty, options->damage);
 		}
+	}
+
+	// swayctl: this buffer is what a shaped shadow is of: the shadow around it is redrawn too
+	struct linked_node *shadow_link = linked_nodes_get_sibling(&scene_buffer->shadow);
+	if (shadow_link != NULL) {
+		struct wlr_scene_shadow *shaped_shadow =
+			wl_container_of(shadow_link, shaped_shadow, transparency_mask_source);
+		scene_node_update(&shaped_shadow->node, NULL);
 	}
 
 	if (update) {
@@ -2399,6 +2442,22 @@ static void scene_entry_render(struct render_list_entry *entry, const struct ren
 			},
 			.clip = &render_region,
 		};
+		struct wlr_scene_buffer *shadow_mask = scene_shadow_get_mask_source(scene_shadow);
+		if (shadow_mask != NULL) {
+			struct wlr_texture *mask_tex =
+				scene_buffer_get_texture(shadow_mask, data->output->output->renderer);
+			int mlx, mly;
+			if (mask_tex != NULL && wlr_scene_node_coords(&shadow_mask->node, &mlx, &mly)) {
+				struct wlr_box mask_box = { .x = mlx, .y = mly };
+				scene_node_get_size(&shadow_mask->node, &mask_box.width, &mask_box.height);
+				transform_output_box(&mask_box, data);
+				shadow_options.mask = fx_get_texture(mask_tex);
+				shadow_options.mask_src = shadow_mask->src_box;
+				shadow_options.mask_box = mask_box;
+				shadow_options.shift_x = scene_shadow->shift_x * data->scale;
+				shadow_options.shift_y = scene_shadow->shift_y * data->scale;
+			}
+		}
 		fx_render_pass_add_box_shadow(fx_pass, &shadow_options);
 		break;
 	case WLR_SCENE_NODE_OPTIMIZED_BLUR:;

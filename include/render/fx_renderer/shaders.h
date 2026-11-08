@@ -155,6 +155,22 @@ struct box_shadow_shader {
 
 bool link_box_shadow_program(struct box_shadow_shader *shader);
 
+// swayctl: the shadow of what a surface draws (its alpha), see shaped_shadow.frag
+struct shaped_shadow_shader {
+	GLuint program;
+	GLint proj;
+	GLint color;
+	GLint pos_attrib;
+	GLint mask;
+	GLint mask_src;
+	GLint mask_pos;
+	GLint mask_size;
+	GLint blur_sigma;
+	GLint shift;
+};
+
+bool link_shaped_shadow_program(struct shaped_shadow_shader *shader);
+
 struct blur_shader {
 	GLuint program;
 	GLint proj;

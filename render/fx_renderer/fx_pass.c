@@ -857,6 +857,46 @@ void fx_render_pass_add_box_shadow(struct fx_gles_render_pass *pass,
 
 	struct wlr_box box = options->box;
 	assert(box.width > 0 && box.height > 0);
+	if (options->mask != NULL && options->blur_sigma > 0.0f) {
+		// swayctl: the shadow of what the surface draws (its alpha), see shaped_shadow.frag
+		struct fx_texture *mask = options->mask;
+		struct shaped_shadow_shader shader = renderer->shaders.shaped_shadow;
+		pixman_region32_t shape_clip;
+		if (options->clip) {
+			pixman_region32_init(&shape_clip);
+			pixman_region32_copy(&shape_clip, options->clip);
+		} else {
+			pixman_region32_init_rect(&shape_clip, box.x, box.y, box.width, box.height);
+		}
+		push_fx_debug(renderer);
+		setup_blending(WLR_RENDER_BLEND_MODE_PREMULTIPLIED);
+		glUseProgram(shader.program);
+		glActiveTexture(GL_TEXTURE0);
+		glBindTexture(mask->target, mask->tex);
+		glTexParameteri(mask->target, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+		glTexParameteri(mask->target, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+		glUniform1i(shader.mask, 0);
+		float tw = mask->wlr_texture.width, th = mask->wlr_texture.height;
+		struct wlr_fbox s = options->mask_src;
+		if (s.width > 0 && s.height > 0 && tw > 0 && th > 0) {
+			glUniform4f(shader.mask_src, s.x / tw, s.y / th, s.width / tw, s.height / th);
+		} else {
+			glUniform4f(shader.mask_src, 0, 0, 1, 1);
+		}
+		glUniform2f(shader.mask_pos, options->mask_box.x, options->mask_box.y);
+		glUniform2f(shader.mask_size, options->mask_box.width, options->mask_box.height);
+		// the box shadow's convention: the setting is twice the gaussian's standard deviation
+		glUniform1f(shader.blur_sigma, options->blur_sigma * 0.5f);
+		glUniform2f(shader.shift, options->shift_x, options->shift_y);
+		const struct wlr_render_color *c = &options->color;
+		glUniform4f(shader.color, c->r, c->g, c->b, c->a);
+		set_proj_matrix(shader.proj, pass->projection_matrix, &box);
+		render(&box, &shape_clip, shader.pos_attrib);
+		glBindTexture(mask->target, 0);
+		pixman_region32_fini(&shape_clip);
+		pop_fx_debug(renderer);
+		return;
+	}
 	if (options->blur_sigma <= 0.0f) {
 		fx_render_pass_add_rounded_rect(pass,
 				&(struct fx_render_rounded_rect_options){

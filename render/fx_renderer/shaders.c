@@ -22,6 +22,7 @@
 #include "blur_effects_frag_src.h"
 #include "glass_frag_src.h"
 #include "glass_field_frag_src.h"
+#include "shaped_shadow_frag_src.h"
 #include "probe_down_frag_src.h"
 
 GLuint compile_shader(GLuint type, const GLchar *src) {
@@ -393,6 +394,24 @@ bool link_glass_program(struct glass_shader *shader) {
 	shader->mask = glGetUniformLocation(prog, "mask");
 	shader->field = glGetUniformLocation(prog, "shape_field");
 	shader->field_span = glGetUniformLocation(prog, "field_span");
+	return true;
+}
+
+bool link_shaped_shadow_program(struct shaped_shadow_shader *shader) {
+	GLuint prog;
+	shader->program = prog = link_program(shaped_shadow_frag_src);
+	if (!shader->program) {
+		return false;
+	}
+	shader->proj = glGetUniformLocation(prog, "proj");
+	shader->color = glGetUniformLocation(prog, "color");
+	shader->pos_attrib = glGetAttribLocation(prog, "pos");
+	shader->mask = glGetUniformLocation(prog, "mask");
+	shader->mask_src = glGetUniformLocation(prog, "mask_src");
+	shader->mask_pos = glGetUniformLocation(prog, "mask_pos");
+	shader->mask_size = glGetUniformLocation(prog, "mask_size");
+	shader->blur_sigma = glGetUniformLocation(prog, "blur_sigma");
+	shader->shift = glGetUniformLocation(prog, "shift");
 	return true;
 }
 
