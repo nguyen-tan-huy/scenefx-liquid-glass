@@ -209,6 +209,30 @@ float demo_disp(float x, float bezel_px, float thick_px, float ior) {
 	return rx * (remaining / max(abs(ry), 1e-4));
 }
 
+// swayctl: where the bend is felt across the bezel. The demo's squircle slope is infinite at the rim,
+// so its Snell displacement is ~all in the outermost few px (40 px of pull at the rim, 16 px three px in,
+// 2 px at the middle of a 32 px bezel): a hairline, read as "no refraction". Taking the profile at
+// x^FALLOFF keeps the rim as it is and spreads the bend across the bezel (32 px of pull four px in,
+// 21 px at eight).
+const float FALLOFF = 2.0;
+
+float prof_x(float x) {
+	return pow(clamp(x, 0.0, 1.0), FALLOFF);
+}
+
+// The largest pull anywhere across the bezel, in the same units as demo_disp. With a thin glass
+// (thickness 0) the path length is y*bezel, which is 0 at the rim: the pull peaks inside the bezel, not
+// at x = 0, and fitting the profile by its rim value left that peak unbounded - hundreds of px, reading
+// past what the glass copied of the backdrop (black arcs and comb lines along the rim).
+float demo_peak(float bezel_px, float thick_px, float ior) {
+	float m = 0.0;
+	for (int i = 0; i < 10; i++) {
+		float x = float(i) * 0.06;
+		m = max(m, abs(demo_disp(prof_x(x), bezel_px, thick_px, ior)));
+	}
+	return m;
+}
+
 void main() {
 	vec2 px = v_texcoord * tex_size;
 	vec2 half_size = box_size * 0.5;
@@ -337,8 +361,12 @@ void main() {
 			color = vec3(f.r, g, f.b);
 		}
 	} else {
-		float denom = max(thickness * 1.05 + bevel * 0.35, 1.0);
-		float raw = demo_disp(x, bevel, thickness, ior_g);
+		// swayctl: a glass of no thickness has no optical path at the rim (the pull is 0 there and peaks
+		// somewhere inside the bezel); give it at least a bezel's worth of body so the profile stays one
+		// smooth lens whatever the slider says
+		float thick = max(thickness, bevel * 0.6);
+		float denom = max(thick * 1.05 + bevel * 0.35, 1.0);
+		float raw = demo_disp(prof_x(x), bevel, thick, ior_g);
 		float field = raw / denom;
 		float g_amt = field * refraction * pull;
 		// A thin pane (a tab, a bar pill, a one-line header) bends no further
@@ -376,7 +404,7 @@ void main() {
 		// it pixel by pixel: a clip made the outer band one flat shift - a
 		// copied strip with a seam, each edge its own, the pane read as four
 		// pieces - where the demo's lens falls off smoothly from the rim.
-		float rim_amt = abs(demo_disp(0.0, bevel, thickness, ior_g) / denom * refraction * pull);
+		float rim_amt = demo_peak(bevel, thick, ior_g) / denom * refraction * pull;
 		float fit = rim_amt > reach ? reach / rim_amt : 1.0;
 		fit *= body;
 		g_amt *= fit;
@@ -394,8 +422,8 @@ void main() {
 			col_r = texel_bilinear(base);
 			col_b = col_r;
 		} else {
-			float field_r = demo_disp(x, bevel, thickness, ior_r) / denom;
-			float field_b = demo_disp(x, bevel, thickness, ior_b) / denom;
+			float field_r = demo_disp(prof_x(x), bevel, thick, ior_r) / denom;
+			float field_b = demo_disp(prof_x(x), bevel, thick, ior_b) / denom;
 			float span = max(field_b - field_r, 1e-4);
 			col_r = texel_bilinear(px - n * (g_amt - fit * chroma * pull * (field - field_r) / span));
 			col_b = texel_bilinear(px - n * (g_amt + fit * chroma * pull * (field_b - field) / span));
