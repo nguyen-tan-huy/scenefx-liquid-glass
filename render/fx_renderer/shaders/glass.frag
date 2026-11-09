@@ -407,6 +407,12 @@ void main() {
 			}
 		}
 		float reach = max(0.4 * across, 4.0);
+		// swayctl: the bend may not fold the backdrop over. The mapping dest -> source is y + shift(y),
+		// monotonic only while the shift falls off slower than 1 px per px; with the x^2 profile its
+		// steepest part is ~2.2 * peak / bezel, so the peak stays under 0.4 bezel (12 px of a 32 px
+		// bezel). A larger pull made the rim a mirror: text there read upside down, in shreds - the
+		// "jagged" look of the shaped panes.
+		reach = min(reach, 0.4 * bevel);
 		// Scale the whole profile to fit (by its pull at the rim), never clip
 		// it pixel by pixel: a clip made the outer band one flat shift - a
 		// copied strip with a seam, each edge its own, the pane read as four
