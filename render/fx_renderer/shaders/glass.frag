@@ -137,16 +137,21 @@ void search_outline(vec2 px, out vec2 n, out float d, out float pull, out float 
 	for (int i = 0; i < 12; i++) {
 		float ang = float(i) * 0.523599;
 		vec2 dir = vec2(cos(ang), sin(ang));
-		float s1 = 8.0, s2 = bevel * 0.5, s3 = bevel;
+		// swayctl: the whole pane is the lens, so the rim is up to half the pane's thickness (far more than
+		// the old fixed 16-32 px): twelve probes along it, not three, so that a gap of ~10 px between two
+		// panes is never stepped over (the ray would run on into the next pane and the pane would read as
+		// thicker than it is)
 		float lo = 0.0, hi = -1.0;
-		if (mask_at(px + dir * s1) < 0.5) { hi = s1; }
-		else if (mask_at(px + dir * s2) < 0.5) { lo = s1; hi = s2; }
-		else if (mask_at(px + dir * s3) < 0.5) { lo = s2; hi = s3; }
+		for (int m = 1; m <= 12; m++) {
+			float sm = bevel * float(m) / 12.0;
+			if (mask_at(px + dir * sm) < 0.5) { hi = sm; break; }
+			lo = sm;
+		}
 		float dist = bevel;
 		reached[i] = hi > 0.0;
 		if (reached[i]) {
 			any_edge = true;
-			for (int j = 0; j < 7; j++) {
+			for (int j = 0; j < 8; j++) {
 				float mid = 0.5 * (lo + hi);
 				if (mask_at(px + dir * mid) < 0.5) { hi = mid; } else { lo = mid; }
 			}
@@ -450,6 +455,10 @@ void main() {
 		// bezel). A larger pull made the rim a mirror: text there read upside down, in shreds - the
 		// "jagged" look of the shaped panes.
 		reach = min(reach, 0.4 * bevel);
+		// swayctl: the whole pane is the lens, and a big pane's rim is a hundred px wide: let it bend over all
+		// of that, but by the same few px a small one does, so the curve is broad and soft (the gradient falls
+		// with the width) and nothing is stretched into streaks or creased at the corners
+		reach = min(reach, 0.3 * refraction);
 		// Scale the whole profile to fit (by its pull at the rim), never clip
 		// it pixel by pixel: a clip made the outer band one flat shift - a
 		// copied strip with a seam, each edge its own, the pane read as four

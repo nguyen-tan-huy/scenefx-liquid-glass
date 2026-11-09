@@ -115,16 +115,18 @@ void main() {
 	for (int i = 0; i < 12; i++) {
 		float ang = float(i) * 0.523599;
 		vec2 dir = vec2(cos(ang), sin(ang));
-		float s1 = 8.0, s2 = bevel * 0.5, s3 = bevel;
+		// swayctl: twelve probes along the rim (see glass.frag): the rim is up to half the pane's thickness
 		float lo = 0.0, hi = -1.0;
-		if ((mask_at(px + dir * s1) >= 0.5) != inside) { hi = s1; }
-		else if ((mask_at(px + dir * s2) >= 0.5) != inside) { lo = s1; hi = s2; }
-		else if ((mask_at(px + dir * s3) >= 0.5) != inside) { lo = s2; hi = s3; }
+		for (int m = 1; m <= 12; m++) {
+			float sm = bevel * float(m) / 12.0;
+			if ((mask_at(px + dir * sm) >= 0.5) != inside) { hi = sm; break; }
+			lo = sm;
+		}
 		float dist = bevel;
 		reached[i] = hi > 0.0;
 		if (reached[i]) {
 			any_edge = true;
-			for (int j = 0; j < 7; j++) {
+			for (int j = 0; j < 8; j++) {
 				float mid = 0.5 * (lo + hi);
 				if ((mask_at(px + dir * mid) >= 0.5) != inside) { hi = mid; } else { lo = mid; }
 			}
