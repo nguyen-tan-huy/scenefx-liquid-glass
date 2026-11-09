@@ -40,30 +40,62 @@ float mask_at(vec2 px) {
 // take the distance a corner rounded at the bezel's own width would give -
 // the demo's geometry when bezel = radius - which joins the straight edges
 // continuously, so the rim can be wider than the corners and stay one piece.
-void round_corners(float dists[24], float r, inout float d, inout vec2 n) {
+// swayctl: the outline's tangent at the nearest hit, from the hits of the two rays beside it. The 24
+// directions blended into one normal (the weighted sum) steps in 15 degree angles round a pill's end and
+// its distance (the shortest ray) is off by up to 3 % at any angle: at a bend as steep as the lens's that
+// showed as pixel noise along the rim. The chord through the neighbouring hits is the tangent to second
+// order on a curve (exact on a straight edge); the distance is to that tangent line.
+bool tangent_fit(float dists[12], bool reached[12], out float d, out vec2 n) {
+	d = 0.0;
+	n = vec2(0.0);
+	int ia = -1;
+	float a = 1e4;
+	for (int i = 0; i < 12; i++) {
+		if (reached[i] && dists[i] < a) { a = dists[i]; ia = i; }
+	}
+	if (ia < 0) { return false; }
+	int i0 = ia - 1;
+	if (i0 < 0) { i0 += 12; }
+	int i2 = ia + 1;
+	if (i2 > 11) { i2 -= 12; }
+	if (!reached[i0] || !reached[i2]) { return false; }
+	float s = 0.523599;
+	vec2 p0 = vec2(cos(float(i0) * s), sin(float(i0) * s)) * dists[i0];
+	vec2 p1 = vec2(cos(float(ia) * s), sin(float(ia) * s)) * a;
+	vec2 p2 = vec2(cos(float(i2) * s), sin(float(i2) * s)) * dists[i2];
+	vec2 t = p2 - p0;
+	if (length(t) < 1e-3) { return false; }
+	n = normalize(vec2(t.y, -t.x));
+	if (dot(n, p1) < 0.0) { n = -n; }
+	d = dot(p1, n);
+	return true;
+}
+
+bool round_corners(float dists[12], float r, inout float d, inout vec2 n) {
 	int ia = 0;
-	for (int i = 1; i < 24; i++) {
+	for (int i = 1; i < 12; i++) {
 		if (dists[i] < dists[ia]) { ia = i; }
 	}
 	float a = dists[ia];
 	float b = 1e4;
 	int ib = ia;
-	for (int i = 0; i < 24; i++) {
+	for (int i = 0; i < 12; i++) {
 		int dd = i - ia;
 		if (dd < 0) { dd = -dd; }
-		if (dd > 12) { dd = 24 - dd; }
-		if (dd >= 6 && dists[i] < b) { b = dists[i]; ib = i; }
+		if (dd > 6) { dd = 12 - dd; }
+		if (dd >= 3 && dists[i] < b) { b = dists[i]; ib = i; }
 	}
 	if (a < r && b < r) {
-		vec2 ka = vec2(cos(float(ia) * 0.261799), sin(float(ia) * 0.261799));
-		vec2 kb = vec2(cos(float(ib) * 0.261799), sin(float(ib) * 0.261799));
+		vec2 ka = vec2(cos(float(ia) * 0.523599), sin(float(ia) * 0.523599));
+		vec2 kb = vec2(cos(float(ib) * 0.523599), sin(float(ib) * 0.523599));
 		vec2 q = vec2(r - a, r - b);
 		d = r - length(q);
 		vec2 nv = ka * q.x + kb * q.y;
 		if (length(nv) > 1e-4) { n = normalize(nv); }
-	} else {
-		d = min(a, b);
+		return true;
 	}
+	d = min(a, b);
+	return false;
 }
 
 void main() {
@@ -78,10 +110,10 @@ void main() {
 	float wsum = 0.0;
 	vec2 nsum = vec2(0.0);
 	bool any_edge = false;
-	float dists[24];
-	bool reached[24];
-	for (int i = 0; i < 24; i++) {
-		float ang = float(i) * 0.261799;
+	float dists[12];
+	bool reached[12];
+	for (int i = 0; i < 12; i++) {
+		float ang = float(i) * 0.523599;
 		vec2 dir = vec2(cos(ang), sin(ang));
 		float s1 = 8.0, s2 = bevel * 0.5, s3 = bevel;
 		float lo = 0.0, hi = -1.0;
@@ -104,7 +136,7 @@ void main() {
 		nsum += dir * w;
 	}
 	float dmin = bevel;
-	for (int i = 0; i < 24; i++) {
+	for (int i = 0; i < 12; i++) {
 		dmin = min(dmin, dists[i]);
 	}
 	// a thin pane (a pill) is thinner than two bevels: cap the bezel so the
@@ -112,9 +144,9 @@ void main() {
 	// that reached both outlines count)
 	if (inside) {
 		float thick = 1e4;
-		for (int i = 0; i < 12; i++) {
-			if (reached[i] && reached[i + 12]) {
-				thick = min(thick, dists[i] + dists[i + 12]);
+		for (int i = 0; i < 6; i++) {
+			if (reached[i] && reached[i + 6]) {
+				thick = min(thick, dists[i] + dists[i + 6]);
 			}
 		}
 		bevel = max(min(bevel, thick * 0.5), 4.0);
@@ -129,7 +161,12 @@ void main() {
 		if (inside) {
 			float dr = dmin;
 			vec2 nr = normalize(nv + vec2(1e-6));
-			round_corners(dists, bevel, dr, nr);
+			bool corner = round_corners(dists, bevel, dr, nr);
+			if (!corner) {
+				float df;
+				vec2 nf;
+				if (tangent_fit(dists, reached, df, nf)) { dr = df; nr = nf; }
+			}
 			nv = nr * length(nv);  // the blend's strength (pull), the corner's direction
 			x = clamp(min(dr, bevel) / bevel, 0.0, 1.0);
 		} else {
