@@ -40,23 +40,23 @@ float mask_at(vec2 px) {
 // take the distance a corner rounded at the bezel's own width would give -
 // the demo's geometry when bezel = radius - which joins the straight edges
 // continuously, so the rim can be wider than the corners and stay one piece.
-void round_corners(float dists[12], float r, inout float d, inout vec2 n) {
+void round_corners(float dists[24], float r, inout float d, inout vec2 n) {
 	int ia = 0;
-	for (int i = 1; i < 12; i++) {
+	for (int i = 1; i < 24; i++) {
 		if (dists[i] < dists[ia]) { ia = i; }
 	}
 	float a = dists[ia];
 	float b = 1e4;
 	int ib = ia;
-	for (int i = 0; i < 12; i++) {
+	for (int i = 0; i < 24; i++) {
 		int dd = i - ia;
 		if (dd < 0) { dd = -dd; }
-		if (dd > 6) { dd = 12 - dd; }
-		if (dd >= 3 && dists[i] < b) { b = dists[i]; ib = i; }
+		if (dd > 12) { dd = 24 - dd; }
+		if (dd >= 6 && dists[i] < b) { b = dists[i]; ib = i; }
 	}
 	if (a < r && b < r) {
-		vec2 ka = vec2(cos(float(ia) * 0.523599), sin(float(ia) * 0.523599));
-		vec2 kb = vec2(cos(float(ib) * 0.523599), sin(float(ib) * 0.523599));
+		vec2 ka = vec2(cos(float(ia) * 0.261799), sin(float(ia) * 0.261799));
+		vec2 kb = vec2(cos(float(ib) * 0.261799), sin(float(ib) * 0.261799));
 		vec2 q = vec2(r - a, r - b);
 		d = r - length(q);
 		vec2 nv = ka * q.x + kb * q.y;
@@ -78,10 +78,10 @@ void main() {
 	float wsum = 0.0;
 	vec2 nsum = vec2(0.0);
 	bool any_edge = false;
-	float dists[12];
-	bool reached[12];
-	for (int i = 0; i < 12; i++) {
-		float ang = float(i) * 0.523599;
+	float dists[24];
+	bool reached[24];
+	for (int i = 0; i < 24; i++) {
+		float ang = float(i) * 0.261799;
 		vec2 dir = vec2(cos(ang), sin(ang));
 		float s1 = 8.0, s2 = bevel * 0.5, s3 = bevel;
 		float lo = 0.0, hi = -1.0;
@@ -104,7 +104,7 @@ void main() {
 		nsum += dir * w;
 	}
 	float dmin = bevel;
-	for (int i = 0; i < 12; i++) {
+	for (int i = 0; i < 24; i++) {
 		dmin = min(dmin, dists[i]);
 	}
 	// a thin pane (a pill) is thinner than two bevels: cap the bezel so the
@@ -112,9 +112,9 @@ void main() {
 	// that reached both outlines count)
 	if (inside) {
 		float thick = 1e4;
-		for (int i = 0; i < 6; i++) {
-			if (reached[i] && reached[i + 6]) {
-				thick = min(thick, dists[i] + dists[i + 6]);
+		for (int i = 0; i < 12; i++) {
+			if (reached[i] && reached[i + 12]) {
+				thick = min(thick, dists[i] + dists[i + 12]);
 			}
 		}
 		bevel = max(min(bevel, thick * 0.5), 4.0);

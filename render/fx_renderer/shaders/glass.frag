@@ -67,23 +67,23 @@ float mask_at(vec2 px) {
 // take the distance a corner rounded at the bezel's own width would give -
 // the demo's geometry when bezel = radius - which joins the straight edges
 // continuously, so the rim can be wider than the corners and stay one piece.
-void round_corners(float dists[12], float r, inout float d, inout vec2 n) {
+void round_corners(float dists[24], float r, inout float d, inout vec2 n) {
 	int ia = 0;
-	for (int i = 1; i < 12; i++) {
+	for (int i = 1; i < 24; i++) {
 		if (dists[i] < dists[ia]) { ia = i; }
 	}
 	float a = dists[ia];
 	float b = 1e4;
 	int ib = ia;
-	for (int i = 0; i < 12; i++) {
+	for (int i = 0; i < 24; i++) {
 		int dd = i - ia;
 		if (dd < 0) { dd = -dd; }
-		if (dd > 6) { dd = 12 - dd; }
-		if (dd >= 3 && dists[i] < b) { b = dists[i]; ib = i; }
+		if (dd > 12) { dd = 24 - dd; }
+		if (dd >= 6 && dists[i] < b) { b = dists[i]; ib = i; }
 	}
 	if (a < r && b < r) {
-		vec2 ka = vec2(cos(float(ia) * 0.523599), sin(float(ia) * 0.523599));
-		vec2 kb = vec2(cos(float(ib) * 0.523599), sin(float(ib) * 0.523599));
+		vec2 ka = vec2(cos(float(ia) * 0.261799), sin(float(ia) * 0.261799));
+		vec2 kb = vec2(cos(float(ib) * 0.261799), sin(float(ib) * 0.261799));
 		vec2 q = vec2(r - a, r - b);
 		d = r - length(q);
 		vec2 nv = ka * q.x + kb * q.y;
@@ -100,10 +100,10 @@ void search_outline(vec2 px, out vec2 n, out float d, out float pull, out float 
 	float wsum = 0.0;
 	vec2 nsum = vec2(0.0);
 	bool any_edge = false;
-	float dists[12];
-	bool reached[12];
-	for (int i = 0; i < 12; i++) {
-		float ang = float(i) * 0.523599;
+	float dists[24];
+	bool reached[24];
+	for (int i = 0; i < 24; i++) {
+		float ang = float(i) * 0.261799;
 		vec2 dir = vec2(cos(ang), sin(ang));
 		float s1 = 8.0, s2 = bevel * 0.5, s3 = bevel;
 		float lo = 0.0, hi = -1.0;
@@ -126,16 +126,16 @@ void search_outline(vec2 px, out vec2 n, out float d, out float pull, out float 
 		nsum += dir * w;
 	}
 	float dmin = bevel;
-	for (int i = 0; i < 12; i++) {
+	for (int i = 0; i < 24; i++) {
 		dmin = min(dmin, dists[i]);
 	}
 	// a thin pane (a pill) is thinner than two bevels: cap the bezel so the
 	// middle line stays flat; only a pair that reached both outlines says
 	// how thick the pane is
 	float thick = 1e4;
-	for (int i = 0; i < 6; i++) {
-		if (reached[i] && reached[i + 6]) {
-			thick = min(thick, dists[i] + dists[i + 6]);
+	for (int i = 0; i < 12; i++) {
+		if (reached[i] && reached[i + 12]) {
+			thick = min(thick, dists[i] + dists[i + 12]);
 		}
 	}
 	bevel = max(min(bevel, thick * 0.5), 4.0);
@@ -171,6 +171,13 @@ float rounded_box(vec2 p, vec2 half_size, float r) {
 // blend (4x the texture reads on every sample of the pane).
 vec3 texel_bilinear(vec2 px) {
 	return texture2D(tex, px / tex_size).rgb;
+}
+
+// swayctl: four bilinear taps spread along the bend, so a backdrop squeezed by the lens is averaged
+// over what it is squeezed from instead of point-sampled (aliasing).
+vec3 texel_smear(vec2 p, vec2 n, float spread) {
+	return 0.25 * (texel_bilinear(p - n * spread * 0.375) + texel_bilinear(p - n * spread * 0.125)
+		+ texel_bilinear(p + n * spread * 0.125) + texel_bilinear(p + n * spread * 0.375));
 }
 
 // Convex squircle (demo SurfaceEquations.convex_squircle). x: 0 rim, 1 flat.
@@ -413,20 +420,23 @@ void main() {
 		// the whole bezel — keep the smear at about the pull per pixel instead.
 		float spread = 0.35 + 0.06 * abs(g_amt);
 		vec2 base = px - n * g_amt;
-		vec3 col_g = 0.5 * (texel_bilinear(base - n * spread * 0.5)
-			+ texel_bilinear(base + n * spread * 0.5));
+		// swayctl: every channel is smeared the same way. Only green used to be (two taps); red and blue
+		// were one tap each, so where the bend squeezes the backdrop (a thin grid line or a letter
+		// minified two to one) the three channels caught different parts of it: scattered yellow,
+		// pink and red dots along the rim - the jagged look of the shaped panes (the OSD's one box
+		// pane is bent the same, but its bend is smooth). Four taps along the bend for each channel.
+		vec3 col_g = texel_smear(base, n, spread);
 		vec3 col_r, col_b;
 		if (chroma <= 0.0) {
-			// chroma * pull * ... is exactly 0: both side channels share the
-			// green bend, so one sample feeds R and B.
-			col_r = texel_bilinear(base);
-			col_b = col_r;
+			// chroma * pull * ... is exactly 0: all three channels share the one bend and one smear
+			col_r = col_g;
+			col_b = col_g;
 		} else {
 			float field_r = demo_disp(prof_x(x), bevel, thick, ior_r) / denom;
 			float field_b = demo_disp(prof_x(x), bevel, thick, ior_b) / denom;
 			float span = max(field_b - field_r, 1e-4);
-			col_r = texel_bilinear(px - n * (g_amt - fit * chroma * pull * (field - field_r) / span));
-			col_b = texel_bilinear(px - n * (g_amt + fit * chroma * pull * (field_b - field) / span));
+			col_r = texel_smear(px - n * (g_amt - fit * chroma * pull * (field - field_r) / span), n, spread);
+			col_b = texel_smear(px - n * (g_amt + fit * chroma * pull * (field_b - field) / span), n, spread);
 		}
 		color = vec3(col_r.r, col_g.g, col_b.b);
 	}
